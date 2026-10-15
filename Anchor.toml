@@ -1,0 +1,42 @@
+[toolchain]
+package_manager = "npm"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+iq_inscription_nft = "FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu"
+
+[programs.devnet]
+iq_inscription_nft = "FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/Desktop/deploy/deploy.json"
+
+[scripts]
+test = "npx tsx tests/registry.test.ts"
+
+[test]
+startup_wait = 5000
+shutdown_wait = 2000
+upgradeable = false
+
+[test.validator]
+# agave 4.x panics on the anchor-cli default 0.0.0.0 (UnspecifiedIpAddr)
+bind_address = "127.0.0.1"
+url = "https://api.mainnet-beta.solana.com"
+ledger = ".anchor/test-ledger"
+rpc_port = 8899
+
+[[test.validator.clone]]
+address = "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+
+# The platform fee receiver must exist on the localnet so a small fee transfer
+# does not trip rent enforcement on account creation.
+[[test.validator.clone]]
+address = "EWNSTD8tikwqHMcRNuuNbZrnYJUiJdKq9UXLXSEU4wZ1"

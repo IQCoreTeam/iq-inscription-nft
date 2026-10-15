@@ -1,0 +1,30 @@
+{
+  "name": "iq-inscription-nft",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx tests/registry.test.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.32.1",
+    "@metaplex-foundation/mpl-core": "1.5.0",
+    "@metaplex-foundation/umi": "1.0.0",
+    "@metaplex-foundation/umi-bundle-defaults": "1.0.0",
+    "@metaplex-foundation/umi-web3js-adapters": "1.0.0",
+    "@solana/web3.js": "1.99.0",
+    "bn.js": "^5.2.1",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2"
+  },
+  "overrides": {
+    "@metaplex-foundation/umi-eddsa-web3js": "1.0.0",
+    "@metaplex-foundation/umi-transaction-factory-web3js": "1.0.0",
+    "@metaplex-foundation/umi-rpc-web3js": "1.0.0",
+    "@metaplex-foundation/umi-rpc-chunk-get-accounts": "1.0.0",
+    "@metaplex-foundation/umi-program-repository": "1.0.0",
+    "@metaplex-foundation/umi-http-fetch": "1.0.0",
+    "@metaplex-foundation/umi-downloader-http": "1.0.0",
+    "@metaplex-foundation/umi-serializer-data-view": "1.0.0",
+    "@metaplex-foundation/umi-web3js-adapters": "1.0.0"
+  }
+}

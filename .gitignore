@@ -1,0 +1,21 @@
+node_modules/
+dist/
+# Build output is ignored, but the backend loads the program IDL at runtime, so
+# track that one file for deploys.
+target/*
+!target/idl/
+target/idl/*
+!target/idl/iq_inscription_nft.json
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.idea/
+.anchor/
+test-ledger/
+# Never commit keypairs
+*-keypair.json
+keypairs/
+backend/.env
+backend/.data/
