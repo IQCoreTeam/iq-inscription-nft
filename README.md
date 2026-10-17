@@ -58,6 +58,7 @@ Scripts (run with `bun --env-file=backend/.env.<cluster> backend/scripts/<name>.
 
 - `deploy-collection.ts --dir <folder> --slug ... --creator <keypair>`: folder of `N.png` (+ optional `N.json`) -> Arweave -> manifest + collection.json inscriptions -> Core collection under the program PDA -> `initialize_registry` -> backend DB -> feed row. `--single` makes a max_supply 0 registry for single NFTs.
 - `mint-e2e.ts --slug ... --funder <keypair>`: a script wallet with a site-style burner goes through deposit, reserve, image inscription, metadata inscription, verify + co-sign, landing, reconcile, public verify, the rejection path, and a DB-wipe rebuild.
+- `rules-e2e.ts --funder <keypair>`: deploys its own 6-item collection with a short TTL and checks the rules, cancel, touch, expiry, a multi-chunk image, the limits, the read routes and the single-NFT route (12 checks).
 
 ## Devnet (2026-10-17)
 

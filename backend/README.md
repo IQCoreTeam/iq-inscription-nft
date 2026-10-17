@@ -157,6 +157,8 @@ The collection and its registry are created in one transaction so nobody can ini
 
 Errors are `{error, reason?}` with 400 (bad input, verification failed), 403 (rules), 404, 409 (sold out, expired, deposit reuse), 429 (limits).
 
+A `503 verification unavailable, retry` from `/mint` or `/single/mint` is not a verdict: the chain could not be read (a public RPC rate-limiting the chunk walk, a transaction not visible yet). The reservation stays; the client re-arms it with `/reserve/touch` and tries again. Only a real mismatch returns 400 and releases the index.
+
 ## Environment
 
 | Variable | Default | Meaning |
@@ -218,3 +220,4 @@ The program id comes from `../target/idl/iq_inscription_nft.json`. Copy `.env.ex
 | `src/db.ts`, `src/config.ts` | schema, env |
 | `scripts/deploy-collection.ts` | stand a collection up from a folder (or `--single`) |
 | `scripts/mint-e2e.ts` | the full mint against a running cluster, 12 checks |
+| `scripts/rules-e2e.ts` | its own 6-item collection with a 25 s TTL: allowlist, deposit mistakes, sequential, cancel, touch, expiry through the reaper, a multi-chunk image, per-wallet limit, open-reservation cap, mint window, read routes, the single-NFT route (12 checks) |
