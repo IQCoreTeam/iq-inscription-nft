@@ -147,6 +147,12 @@ app.post("/c/:slug/mint", async (c) => {
   const tv = Date.now();
   const result = await verifyItem(r, col, item, inscriptionSig, metaSig);
   if (!result.pass) {
+    if (result.retry) {
+      // Not a verdict: the chain could not be read. Keep the reservation, let the
+      // client try again (touch keeps it alive).
+      console.warn(`${tag} VERIFY-UNAVAILABLE verify=${Date.now() - tv}ms reason="${result.reason}"`);
+      return c.json({ error: "verification unavailable, retry", reason: result.reason }, 503);
+    }
     console.error(`${tag} VERIFY-REJECT verify=${Date.now() - tv}ms reason="${result.reason}"`);
     markRejected(r);
     return c.json({ error: "verification failed", reason: result.reason }, 400);
@@ -167,7 +173,7 @@ app.post("/single/mint", async (c) => {
   if (!isSig(inscriptionSig) || !isSig(metaSig)) return c.json({ error: "inscriptionSig and metaSig (base58) required" }, 400);
   if (typeof name !== "string" || name.length === 0 || Buffer.byteLength(name) > 80) return c.json({ error: "name must be 1..80 bytes" }, 400);
   const result = await verifySingle(wallet, burner, inscriptionSig, metaSig);
-  if (!result.pass) return c.json({ error: "verification failed", reason: result.reason }, 400);
+  if (!result.pass) return c.json({ error: result.retry ? "verification unavailable, retry" : "verification failed", reason: result.reason }, result.retry ? 503 : 400);
   return c.json(await coSignRegisterSingle(col, { wallet, burner, inscriptionSig, metaSig, name, asset }));
 });
 

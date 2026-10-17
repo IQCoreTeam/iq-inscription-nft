@@ -18,7 +18,13 @@ import type { CollectionRow, ItemRow, ReservationRow } from "./db.ts";
 // and only linked-list / session walks go through it (inline reads cost zero).
 setRpcUrl(config.rpcUrls[0]);
 
-export type VerifyResult = { pass: true } | { pass: false; reason: string };
+// retry: true means the chain could not be read (RPC down, 429, tx not visible
+// yet), which is not a verdict: the caller keeps the reservation and the client
+// tries again. retry: false is a real mismatch and the reservation is rejected.
+export type VerifyResult = { pass: true } | { pass: false; retry: boolean; reason: string };
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const transient = (e: unknown) => /429|Too Many Requests|rate|timeout|ECONN|fetch failed|503|502|pool exhausted/i.test(String(e));
 
 function feePayerOf(tx: any): string | null {
   const msg = tx?.transaction?.message;
@@ -28,30 +34,41 @@ function feePayerOf(tx: any): string | null {
   return typeof first === "string" ? first : first.toBase58();
 }
 
-// One getTransaction + SDK decode. Returns the code-in payload or a reason.
-async function readInscription(sig: string, burner: string): Promise<{ data: string } | { reason: string }> {
-  let tx: any;
-  try {
-    tx = await withConnection(
-      (c) => c.getTransaction(sig, { maxSupportedTransactionVersion: 1, commitment: "confirmed" }),
-      { retableOnNull: true }
-    );
-  } catch {
-    return { reason: `rpc pool could not fetch ${sig.slice(0, 8)}` };
+// One getTransaction + SDK decode, with backoff on transient RPC trouble (a
+// session-path image walks a dozen chunk transactions, which public RPCs
+// rate-limit). Returns the payload, a definitive reason, or a retry.
+async function readInscription(sig: string, burner: string): Promise<{ data: string } | { reason: string; retry: boolean }> {
+  const delays = [2000, 4000, 8000];
+  for (let attempt = 0; ; attempt++) {
+    let tx: any;
+    try {
+      tx = await withConnection(
+        (c) => c.getTransaction(sig, { maxSupportedTransactionVersion: 1, commitment: "confirmed" }),
+        { retableOnNull: true }
+      );
+    } catch (e) {
+      if (attempt < delays.length) { await sleep(delays[attempt]); continue; }
+      return { retry: true, reason: `rpc pool could not fetch ${sig.slice(0, 8)}: ${e}` };
+    }
+    if (!tx) {
+      // not visible yet on this endpoint: give propagation a moment
+      if (attempt < delays.length) { await sleep(delays[attempt]); continue; }
+      return { retry: true, reason: `transaction ${sig.slice(0, 8)} not found` };
+    }
+    if (tx.meta?.err) return { retry: false, reason: `transaction ${sig.slice(0, 8)} failed on chain` };
+    const payer = feePayerOf(tx);
+    if (payer !== burner) return { retry: false, reason: `fee payer ${payer} is not the reserving burner ${burner}` };
+    let decoded: { metadata: string; data: string | null };
+    try {
+      decoded = await reader.readUserInventoryCodeInFromTx(tx);
+    } catch (e) {
+      if (transient(e) && attempt < delays.length) { await sleep(delays[attempt]); continue; }
+      return { retry: transient(e), reason: `SDK could not decode ${sig.slice(0, 8)}: ${e}` };
+    }
+    const data = decoded.data ?? (decoded.metadata ? (JSON.parse(decoded.metadata).data ?? null) : null);
+    if (data == null) return { retry: false, reason: `no code-in data in ${sig.slice(0, 8)}` };
+    return { data };
   }
-  if (!tx) return { reason: `transaction ${sig.slice(0, 8)} not found` };
-  if (tx.meta?.err) return { reason: `transaction ${sig.slice(0, 8)} failed on chain` };
-  const payer = feePayerOf(tx);
-  if (payer !== burner) return { reason: `fee payer ${payer} is not the reserving burner ${burner}` };
-  let decoded: { metadata: string; data: string | null };
-  try {
-    decoded = await reader.readUserInventoryCodeInFromTx(tx);
-  } catch (e) {
-    return { reason: `SDK could not decode ${sig.slice(0, 8)}: ${e}` };
-  }
-  const data = decoded.data ?? (decoded.metadata ? (JSON.parse(decoded.metadata).data ?? null) : null);
-  if (data == null) return { reason: `no code-in data in ${sig.slice(0, 8)}` };
-  return { data };
 }
 
 // The image inscription is the site's feed row; the bytes live in a data URL.
@@ -78,18 +95,18 @@ export async function verifyItem(
   metaSig: string
 ): Promise<VerifyResult> {
   const image = await readInscription(inscriptionSig, r.burner);
-  if ("reason" in image) return { pass: false, reason: `C: ${image.reason}` };
+  if ("reason" in image) return { pass: false, retry: image.retry, reason: `C: ${image.reason}` };
   const bytes = imageBytesOf(image.data, r.wallet);
-  if ("reason" in bytes) return { pass: false, reason: `C: ${bytes.reason}` };
+  if ("reason" in bytes) return { pass: false, retry: false, reason: `C: ${bytes.reason}` };
   const got = createHash("sha256").update(bytes.bytes).digest("hex");
   if (got !== item.image_sha256) {
-    return { pass: false, reason: `C: sha256 of the inscribed image ${got.slice(0, 12)} is not the manifest hash ${item.image_sha256.slice(0, 12)}` };
+    return { pass: false, retry: false, reason: `C: sha256 of the inscribed image ${got.slice(0, 12)} is not the manifest hash ${item.image_sha256.slice(0, 12)}` };
   }
 
   const meta = await readInscription(metaSig, r.burner);
-  if ("reason" in meta) return { pass: false, reason: `M: ${meta.reason}` };
+  if ("reason" in meta) return { pass: false, retry: meta.retry, reason: `M: ${meta.reason}` };
   if (meta.data !== buildMetadata(c, item, inscriptionSig)) {
-    return { pass: false, reason: "M: inscribed JSON is not the canonical metadata for this item and C" };
+    return { pass: false, retry: false, reason: "M: inscribed JSON is not the canonical metadata for this item and C" };
   }
   return { pass: true };
 }
@@ -99,21 +116,21 @@ export async function verifyItem(
 // and M is a JSON object that points at C.
 export async function verifySingle(wallet: string, burner: string, inscriptionSig: string, metaSig: string): Promise<VerifyResult> {
   const content = await readInscription(inscriptionSig, burner);
-  if ("reason" in content) return { pass: false, reason: `C: ${content.reason}` };
+  if ("reason" in content) return { pass: false, retry: content.retry, reason: `C: ${content.reason}` };
   try {
     const row = JSON.parse(content.data);
-    if (row?.who !== wallet) return { pass: false, reason: `C: feed row who is ${row?.who}, expected ${wallet}` };
+    if (row?.who !== wallet) return { pass: false, retry: false, reason: `C: feed row who is ${row?.who}, expected ${wallet}` };
   } catch {
-    return { pass: false, reason: "C: inscription is not a feed row" };
+    return { pass: false, retry: false, reason: "C: inscription is not a feed row" };
   }
   const meta = await readInscription(metaSig, burner);
-  if ("reason" in meta) return { pass: false, reason: `M: ${meta.reason}` };
+  if ("reason" in meta) return { pass: false, retry: meta.retry, reason: `M: ${meta.reason}` };
   try {
     const json = JSON.parse(meta.data);
     const points = Array.isArray(json?.attributes) && json.attributes.some((a: any) => a?.trait_type === "inscription" && a?.value === inscriptionSig);
-    if (!points) return { pass: false, reason: "M: attributes.inscription does not name C" };
+    if (!points) return { pass: false, retry: false, reason: "M: attributes.inscription does not name C" };
   } catch {
-    return { pass: false, reason: "M: not valid JSON" };
+    return { pass: false, retry: false, reason: "M: not valid JSON" };
   }
   return { pass: true };
 }
