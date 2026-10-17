@@ -320,6 +320,7 @@ async function main() {
 
     const slot: any = await (program.account as any).itemSlot.fetch(itemSlotPda(1));
     assert.equal(slot.index, 1);
+    assert.equal(slot.registry.toBase58(), registryPda.toBase58());
     assert.equal(slot.owner.toBase58(), ownerKp.publicKey.toBase58());
     assert.equal(slot.asset.toBase58(), asset1.publicKey.toBase58());
     assert.deepEqual(Array.from(slot.contentHash), hashOf(1));

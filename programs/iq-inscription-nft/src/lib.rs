@@ -114,6 +114,7 @@ pub mod iq_inscription_nft {
 
         let slot = &mut ctx.accounts.item_slot;
         slot.bump = ctx.bumps.item_slot;
+        slot.registry = registry.key();
         slot.index = index;
         slot.owner = ctx.accounts.owner.key();
         slot.asset = ctx.accounts.asset.key();
@@ -452,6 +453,9 @@ impl Registry {
 #[account]
 pub struct ItemSlot {
     pub bump: u8,
+    // Which registry this slot belongs to, so indexers and the backend reconciler
+    // can memcmp-filter slots per collection (the seed alone is not filterable).
+    pub registry: Pubkey,
     pub index: u32,
     pub owner: Pubkey,
     pub asset: Pubkey,
@@ -462,7 +466,7 @@ pub struct ItemSlot {
 }
 
 impl ItemSlot {
-    pub const LEN: usize = 8 + 1 + 4 + 32 + 32 + 32 + 64 + 64 + 8;
+    pub const LEN: usize = 8 + 1 + 32 + 4 + 32 + 32 + 32 + 64 + 64 + 8;
 }
 
 #[account]

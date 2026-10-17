@@ -1078,6 +1078,10 @@
             "type": "u8"
           },
           {
+            "name": "registry",
+            "type": "pubkey"
+          },
+          {
             "name": "index",
             "type": "u32"
           },
