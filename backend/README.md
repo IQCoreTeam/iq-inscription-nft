@@ -29,6 +29,51 @@ flowchart LR
 
 The backend never pays for anything and never touches a user's funds. The burner (derived from one wallet signature, same as the site's inscription flow) is the fee payer for C, M and the mint; the backend only adds the registrar signature.
 
+## Who signs what, who pays whom
+
+Three phases. The backend only ever adds one signature (the registrar) and never holds a user key or any funds.
+
+```mermaid
+flowchart LR
+  subgraph A["1. Before the mint: allocation (backend)"]
+    A1["deposit lands in the creator wallet"] --> A2["backend checks the deposit and the rules"] --> A3["backend hands out item number 57"]
+  end
+  subgraph B["2. In the browser: the burner signs everything"]
+    B1["burner inscribes the image -> C"] --> B2["burner inscribes the metadata -> M"] --> B3["browser sends C and M to the backend"]
+  end
+  subgraph C["3. After the mint: registration (chain)"]
+    C1["backend verifies C and M, co-signs register_item"] --> C2["burner signs and sends it"] --> C3["program: bit 57 set, price to the creator wallet, fee to the platform, token to the user"]
+  end
+  A --> B --> C
+```
+
+```mermaid
+sequenceDiagram
+  actor You as You (wallet)
+  participant Br as Browser (burner key, never leaves the page)
+  participant Be as Backend (registrar key)
+  participant Ch as Chain (program)
+  participant Cr as Creator wallet
+  You->>Br: sign once: derive the burner
+  You->>Br: sign once: fund the burner (price + deposit + ~0.014 SOL)
+  Br->>Cr: deposit (plain SOL transfer, signed by the burner)
+  Br->>Be: reserve: wallet, burner, deposit tx
+  Be-->>Br: item 57, image on Arweave
+  Br->>Ch: inscribe the image (burner pays) -> C
+  Br->>Be: canonical metadata for 57 + C
+  Br->>Ch: inscribe the metadata (burner pays) -> M
+  Br->>Be: mint: C, M, asset keypair
+  Be->>Ch: read C and M, check them against the manifest
+  Be-->>Br: register_item with the registrar signature
+  Br->>Ch: add the burner and asset signatures, send
+  Ch->>Cr: price minus deposit
+  Ch->>Ch: platform fee to the platform treasury, bit 57 set
+  Ch->>You: the token (owner = your wallet)
+  Br->>You: leftover swept back
+```
+
+Proxy signing is the browser's job, exactly like the iq6900 code-in page: the burner is derived from one wallet signature in the page, the page funds it with one wallet transfer, and from then on the burner signs the deposit, both inscriptions and the mint. What the browser hands the backend is addresses, never keys: the burner's public key, the deposit transaction signature, then C and M. What the backend hands back is the registrar-signed `register_item`. The money never passes through the backend: the deposit is a transfer from the burner to the creator wallet, and the program moves the rest from the burner to the creator wallet (and the fee to the platform treasury) inside `register_item`, to the addresses recorded in the registry at deploy time.
+
 ## What a mint looks like from the backend
 
 ```mermaid
