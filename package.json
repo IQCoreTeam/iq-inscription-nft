@@ -3,17 +3,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "tsx tests/registry.test.ts"
+    "test": "tsx tests/registry.test.ts",
+    "backend": "bun run backend/src/server.ts",
+    "backend:dev": "bun run --watch backend/src/server.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",
+    "@iqlabs-official/solana-sdk": "0.3.6",
     "@metaplex-foundation/mpl-core": "1.5.0",
     "@metaplex-foundation/umi": "1.0.0",
     "@metaplex-foundation/umi-bundle-defaults": "1.0.0",
     "@metaplex-foundation/umi-web3js-adapters": "1.0.0",
     "@solana/web3.js": "1.99.0",
     "bn.js": "^5.2.1",
+    "hono": "^4.13.7",
     "tsx": "4.20.5",
+    "tweetnacl": "^1.0.3",
     "typescript": "5.9.2"
   },
   "overrides": {

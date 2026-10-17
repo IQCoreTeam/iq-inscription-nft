@@ -19,3 +19,5 @@ test-ledger/
 keypairs/
 backend/.env
 backend/.data/
+backend/.env.*
+backend/.registrar*.json

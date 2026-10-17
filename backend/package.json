@@ -1,0 +1,10 @@
+{
+  "name": "iq-inscription-nft-backend",
+  "private": true,
+  "type": "module",
+  "description": "Reserve, verify, co-sign. Holds the registrar key and the RPC pool; neither reaches a browser.",
+  "dependencies": {
+    "@irys/upload": "^0.0.15",
+    "@irys/upload-solana": "^0.1.8"
+  }
+}

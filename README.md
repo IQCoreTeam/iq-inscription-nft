@@ -39,3 +39,30 @@ On this Mac the host-side build scripts need the CommandLineTools toolchain:
 ```
 export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 ```
+
+## Backend
+
+`backend/` is the reserve / verify / co-sign service (Bun + Hono + SQLite), a fork of bible-nft's backend generalized to many collections. One process serves every collection; collections and their item manifests live in SQLite, the registrar key and the RPC pool stay in the process.
+
+```
+cp backend/.env.example backend/.env   # fill in REGISTRAR_KEYPAIR, RPC_URLS, ...
+bun install && (cd backend && bun install)
+bun --env-file=backend/.env backend/src/server.ts
+```
+
+Routes: `GET /c`, `GET /c/:slug`, `GET /c/:slug/items`, `POST /c/:slug/reserve` (wallet, burner, depositSig), `POST /c/:slug/reserve/touch`, `POST /c/:slug/reserve/cancel`, `GET /c/:slug/json/:index?c=C` (the canonical metadata the minter inscribes as M), `POST /c/:slug/mint` (reservationId, inscriptionSig, metaSig, asset; returns the registrar-signed tx), `POST /single/mint`, `GET /c/:slug/verify/:index`, `GET /c/:slug/recent`, `GET /stats`.
+
+Scripts (run with `bun --env-file=backend/.env.<cluster> backend/scripts/<name>.ts`):
+
+- `deploy-collection.ts --dir <folder> --slug ... --creator <keypair>`: folder of `N.png` (+ optional `N.json`) -> Arweave -> manifest + collection.json inscriptions -> Core collection under the program PDA -> `initialize_registry` -> backend DB -> feed row. `--single` makes a max_supply 0 registry for single NFTs.
+- `mint-e2e.ts --slug ... --funder <keypair>`: a script wallet with a site-style burner goes through deposit, reserve, image inscription, metadata inscription, verify + co-sign, landing, reconcile, public verify, the rejection path, and a DB-wipe rebuild.
+
+## Devnet (2026-10-17)
+
+| | |
+|---|---|
+| program | `FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu` (upgrade authority: the deploy wallet) |
+| test collection `test-monks` | Core collection `Cs1UhRLFyAP3AZ2Xp5SNM9VnNpxjG493uz5awZCWTsX9`, registry `26B8MGpSguuY2Q6ffrUfo3bKLscbcEiuWpsejWqDEWrQ`, 5 items, price 0.01 SOL, deposit 0.002 SOL |
+| single-NFT collection `iq6900-inscriptions` | Core collection `R2QmKTZq22BvhVX8dnzkg4rMkj5uz7WuaDRsF3CuAaE`, registry `2f1cehnQTS2PgUT9h1ub2BnWLThzbSXoSXbnX6VQk7uk` |
+
+`mint-e2e.ts` passes 12 checks against `test-monks` on devnet.
