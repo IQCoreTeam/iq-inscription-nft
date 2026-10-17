@@ -50,9 +50,9 @@ sequenceDiagram
   BR->>B: POST /c/:slug/mint {reservationId, inscriptionSig C, metaSig M, asset}
   B->>CH: getTransaction(C): fee payer == burner, row.who == wallet, sha256(image bytes) == manifest
   B->>CH: getTransaction(M): fee payer == burner, bytes == canonical JSON
-  B->>B: reservation -> awaiting_submit; build register_item; partialSign(registrar)
+  B->>B: reservation to awaiting_submit, build register_item, partialSign(registrar)
   B-->>BR: {transaction base64, lastValidBlockHeight}
-  BR->>CH: partialSign(burner, asset); send
+  BR->>CH: partialSign(burner, asset), send
   CH->>CH: bit set, inscription record, price - deposit to creator, fee to platform, Core asset to wallet
   B->>CH: reaper / reconciler see the bit -> reservation confirmed, mirror row written
 ```
