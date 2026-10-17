@@ -12,8 +12,10 @@ import { randomUUID } from "node:crypto";
 import { PublicKey } from "@solana/web3.js";
 import { db, nowSec, type CollectionRow } from "./db.ts";
 import { config } from "./config.ts";
-import { getItem, permutationOf } from "./collections.ts";
+import { getItem, permutationOf, upsertSlot } from "./collections.ts";
 import { withConnection } from "./rpcpool.ts";
+import { fetchItemSlot } from "./program.ts";
+import { markConfirmed } from "./reservations.ts";
 
 export class ReserveError extends Error {
   constructor(public status: number, message: string) {
@@ -98,29 +100,43 @@ export async function reserve(c: CollectionRow, wallet: string, burner: string, 
   checkEligibility(c, wallet);
   await checkDeposit(c, burner, depositSig);
 
-  const now = nowSec();
-  const expiresAt = now + config.reservationTtlSeconds;
-  const id = randomUUID();
   const permutation = permutationOf(c);
+  const registry = new PublicKey(c.registry);
 
-  db.run("BEGIN IMMEDIATE");
+  // Take the next index and hold it. Then ask the chain: if that index already
+  // has a slot (the DB was rolled back or someone minted around us), record the
+  // slot, keep the hold as confirmed so it is never offered again, and take the
+  // next one. One getAccountInfo per reservation in the normal case.
+  let id: string;
   let index: number;
-  try {
-    const returned = takeReturned.get(c.slug);
-    if (returned) {
-      index = returned.item_index;
-      deleteReturned.run(c.slug, index);
-    } else {
-      const cursor = getCursor.get(c.slug)!.cursor;
-      if (cursor >= c.max_supply) throw new ReserveError(409, "sold out: every item is reserved or minted");
-      index = permutation[cursor];
-      setCursor.run(c.slug, cursor + 1);
+  let expiresAt: number;
+  for (;;) {
+    const now = nowSec();
+    expiresAt = now + config.reservationTtlSeconds;
+    id = randomUUID();
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const returned = takeReturned.get(c.slug);
+      if (returned) {
+        index = returned.item_index;
+        deleteReturned.run(c.slug, index);
+      } else {
+        const cursor = getCursor.get(c.slug)!.cursor;
+        if (cursor >= c.max_supply) throw new ReserveError(409, "sold out: every item is reserved or minted");
+        index = permutation[cursor];
+        setCursor.run(c.slug, cursor + 1);
+      }
+      insertReservation.run(id, c.slug, index, wallet, burner, c.deposit_lamports ? depositSig : null, now, expiresAt);
+      db.run("COMMIT");
+    } catch (e) {
+      db.run("ROLLBACK");
+      throw e;
     }
-    insertReservation.run(id, c.slug, index, wallet, burner, c.deposit_lamports ? depositSig : null, now, expiresAt);
-    db.run("COMMIT");
-  } catch (e) {
-    db.run("ROLLBACK");
-    throw e;
+    const onChain = await fetchItemSlot(registry, index);
+    if (!onChain) break;
+    console.warn(`[reserve] ${c.slug} #${index} is already minted on chain but the DB did not know; recording and skipping`);
+    upsertSlot(c.slug, onChain);
+    markConfirmed(id);
   }
 
   const item = getItem(c.slug, index)!;

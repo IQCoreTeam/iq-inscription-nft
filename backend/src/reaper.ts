@@ -7,8 +7,8 @@
 import { PublicKey } from "@solana/web3.js";
 import { db, nowSec, type ReservationRow } from "./db.ts";
 import { config } from "./config.ts";
-import { getCollection } from "./collections.ts";
-import { slotExists } from "./program.ts";
+import { getCollection, upsertSlot } from "./collections.ts";
+import { fetchItemSlot } from "./program.ts";
 import { markConfirmed, markExpired } from "./reservations.ts";
 
 // `reserved` past TTL + slack, and `awaiting_submit` (co-signed, never seen to
@@ -30,13 +30,14 @@ export async function reap(): Promise<ReapReport> {
   for (const r of rows) {
     const c = getCollection(r.slug);
     if (!c) continue;
-    let landed: boolean;
+    let landed;
     try {
-      landed = await slotExists(new PublicKey(c.registry), r.item_index);
+      landed = await fetchItemSlot(new PublicKey(c.registry), r.item_index);
     } catch {
       continue; // rpc down: cannot tell, leave it for the next tick
     }
     if (landed) {
+      upsertSlot(c.slug, landed);
       markConfirmed(r.id);
       confirmed++;
     } else {

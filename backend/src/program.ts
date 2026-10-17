@@ -117,17 +117,7 @@ export type OnChainSlot = {
 // after the discriminator and bump). What makes a wiped database a restart.
 export async function fetchItemSlots(registry: PublicKey): Promise<OnChainSlot[]> {
   const rows = await program.account.itemSlot.all([{ memcmp: { offset: 8 + 1, bytes: registry.toBase58() } }]);
-  return rows.map((r) => {
-    const a = r.account as any;
-    return {
-      index: a.index as number,
-      owner: (a.owner as PublicKey).toBase58(),
-      asset: (a.asset as PublicKey).toBase58(),
-      inscriptionSig: bs58.encode(Buffer.from(a.inscriptionSig as number[])),
-      metaSig: bs58.encode(Buffer.from(a.metaSig as number[])),
-      registeredAt: Number(a.registeredAt),
-    };
-  });
+  return rows.map((r) => decodeSlot(r.account));
 }
 
 export async function fetchRegistry(registry: PublicKey) {
@@ -144,6 +134,19 @@ export async function fetchRegistry(registry: PublicKey) {
   };
 }
 
-export async function slotExists(registry: PublicKey, index: number): Promise<boolean> {
-  return (await connection.getAccountInfo(itemSlotPda(registry, index), "confirmed")) !== null;
+function decodeSlot(a: any): OnChainSlot {
+  return {
+    index: a.index as number,
+    owner: (a.owner as PublicKey).toBase58(),
+    asset: (a.asset as PublicKey).toBase58(),
+    inscriptionSig: bs58.encode(Buffer.from(a.inscriptionSig as number[])),
+    metaSig: bs58.encode(Buffer.from(a.metaSig as number[])),
+    registeredAt: Number(a.registeredAt),
+  };
+}
+
+// One slot, or null when that index has not been minted on chain.
+export async function fetchItemSlot(registry: PublicKey, index: number): Promise<OnChainSlot | null> {
+  const a = await program.account.itemSlot.fetchNullable(itemSlotPda(registry, index), "confirmed");
+  return a ? decodeSlot(a) : null;
 }

@@ -5,16 +5,10 @@
 
 import { PublicKey } from "@solana/web3.js";
 import { db } from "./db.ts";
-import { listCollections } from "./collections.ts";
+import { listCollections, upsertSlot } from "./collections.ts";
 import { fetchItemSlots, fetchRegistry } from "./program.ts";
 import { markConfirmed } from "./reservations.ts";
 
-const upsertSlot = db.query(
-  `INSERT INTO slot (slug, item_index, asset, owner, inscription_sig, meta_sig, registered_at)
-   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-   ON CONFLICT(slug, item_index) DO UPDATE SET
-     asset = ?3, owner = ?4, inscription_sig = ?5, meta_sig = ?6, registered_at = ?7`
-);
 const liveForItem = db.query<{ id: string }, [string, number]>(
   `SELECT id FROM reservation WHERE slug = ? AND item_index = ? AND state IN ('reserved','awaiting_submit')`
 );
@@ -30,7 +24,7 @@ export async function reconcile(): Promise<ReconcileReport> {
     const registry = new PublicKey(c.registry);
     const slots = await fetchItemSlots(registry);
     for (const s of slots) {
-      upsertSlot.run(c.slug, s.index, s.asset, s.owner, s.inscriptionSig, s.metaSig, s.registeredAt);
+      upsertSlot(c.slug, s);
       for (const r of liveForItem.all(c.slug, s.index)) {
         markConfirmed(r.id);
         report.confirmed++;

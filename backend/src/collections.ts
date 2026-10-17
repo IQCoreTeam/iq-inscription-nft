@@ -3,6 +3,7 @@
 
 import { db, type CollectionRow, type ItemRow } from "./db.ts";
 import { derivePermutation } from "./shuffle.ts";
+import type { OnChainSlot } from "./program.ts";
 
 const bySlug = db.query<CollectionRow, [string]>("SELECT * FROM collection WHERE slug = ?");
 const all = db.query<CollectionRow, []>("SELECT * FROM collection ORDER BY created_at DESC");
@@ -23,6 +24,18 @@ export function getItem(slug: string, index: number): ItemRow | null {
 
 export function mintedIndices(slug: string): number[] {
   return mintedOf.all(slug).map((r) => r.item_index);
+}
+
+const upsertSlotStmt = db.query(
+  `INSERT INTO slot (slug, item_index, asset, owner, inscription_sig, meta_sig, registered_at)
+   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+   ON CONFLICT(slug, item_index) DO UPDATE SET
+     asset = ?3, owner = ?4, inscription_sig = ?5, meta_sig = ?6, registered_at = ?7`
+);
+// Mirror one on-chain slot into the DB (reconciler, and the allocator when it
+// discovers a minted index the DB did not know about).
+export function upsertSlot(slug: string, s: OnChainSlot): void {
+  upsertSlotStmt.run(slug, s.index, s.asset, s.owner, s.inscriptionSig, s.metaSig, s.registeredAt);
 }
 
 const permutations = new Map<string, number[]>();
