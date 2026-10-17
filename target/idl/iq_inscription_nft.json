@@ -195,31 +195,6 @@
           }
         },
         {
-          "name": "item_slot",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  116,
-                  101,
-                  109
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "registry"
-              },
-              {
-                "kind": "arg",
-                "path": "index"
-              }
-            ]
-          }
-        },
-        {
           "name": "inscription_record",
           "writable": true
         },
@@ -959,19 +934,6 @@
       ]
     },
     {
-      "name": "ItemSlot",
-      "discriminator": [
-        159,
-        194,
-        100,
-        50,
-        163,
-        56,
-        118,
-        228
-      ]
-    },
-    {
       "name": "Registry",
       "discriminator": [
         47,
@@ -1003,46 +965,51 @@
     },
     {
       "code": 6003,
+      "name": "IndexAlreadyMinted",
+      "msg": "this item index has already been minted"
+    },
+    {
+      "code": 6004,
       "name": "CollectionNotUnderProgramAuthority",
       "msg": "the collection's update authority is not this program's PDA"
     },
     {
-      "code": 6004,
+      "code": 6005,
       "name": "NameTooLong",
       "msg": "asset name exceeds 80 bytes"
     },
     {
-      "code": 6005,
+      "code": 6006,
       "name": "UriTooLong",
       "msg": "uri exceeds 160 bytes"
     },
     {
-      "code": 6006,
+      "code": 6007,
       "name": "WrongTreasury",
       "msg": "treasury account does not match registry.treasury"
     },
     {
-      "code": 6007,
+      "code": 6008,
       "name": "WrongPlatformTreasury",
       "msg": "platform treasury account does not match the program constant"
     },
     {
-      "code": 6008,
+      "code": 6009,
       "name": "UnauthorizedAdmin",
       "msg": "signer is not the admin"
     },
     {
-      "code": 6009,
+      "code": 6010,
       "name": "WrongAsset",
       "msg": "asset does not match the one recorded for this inscription"
     },
     {
-      "code": 6010,
+      "code": 6011,
       "name": "DepositOverPrice",
       "msg": "deposit cannot exceed the price"
     },
     {
-      "code": 6011,
+      "code": 6012,
       "name": "NotASingleRegistry",
       "msg": "register_single needs a registry with max_supply 0"
     }
@@ -1064,34 +1031,10 @@
           {
             "name": "collection",
             "type": "pubkey"
-          }
-        ]
-      }
-    },
-    {
-      "name": "ItemSlot",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "bump",
-            "type": "u8"
-          },
-          {
-            "name": "registry",
-            "type": "pubkey"
           },
           {
             "name": "index",
             "type": "u32"
-          },
-          {
-            "name": "owner",
-            "type": "pubkey"
-          },
-          {
-            "name": "asset",
-            "type": "pubkey"
           },
           {
             "name": "content_hash",
@@ -1103,15 +1046,6 @@
             }
           },
           {
-            "name": "inscription_sig",
-            "type": {
-              "array": [
-                "u8",
-                64
-              ]
-            }
-          },
-          {
             "name": "meta_sig",
             "type": {
               "array": [
@@ -1119,10 +1053,6 @@
                 64
               ]
             }
-          },
-          {
-            "name": "registered_at",
-            "type": "i64"
           }
         ]
       }
@@ -1202,6 +1132,10 @@
           {
             "name": "frozen",
             "type": "bool"
+          },
+          {
+            "name": "minted_bitmap",
+            "type": "bytes"
           }
         ]
       }

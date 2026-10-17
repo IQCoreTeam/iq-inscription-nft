@@ -6,6 +6,9 @@
 
 import * as anchor from "@coral-xyz/anchor";
 import { Connection, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
+import { publicKey as umiPk } from "@metaplex-foundation/umi";
+import { fetchAssetsByCollection } from "@metaplex-foundation/mpl-core";
 import { config, idl, MPL_CORE } from "./config.ts";
 
 const connection = new Connection(config.rpcUrls[0], "confirmed");
@@ -22,11 +25,6 @@ export function registryOf(collection: PublicKey): PublicKey {
 }
 export function collectionAuthOf(registry: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([enc.encode("collection-auth"), registry.toBuffer()], config.programId)[0];
-}
-export function itemSlotPda(registry: PublicKey, index: number): PublicKey {
-  const le = Buffer.alloc(4);
-  le.writeUInt32LE(index);
-  return PublicKey.findProgramAddressSync([enc.encode("item"), registry.toBuffer(), le], config.programId)[0];
 }
 export function inscriptionPda(sig: Uint8Array): PublicKey {
   return PublicKey.findProgramAddressSync(
@@ -62,7 +60,6 @@ export function buildRegisterItemIx(t: Target, a: {
       owner: a.owner,
       registrar: config.registrar.publicKey,
       registry,
-      itemSlot: itemSlotPda(registry, a.index),
       inscriptionRecord: inscriptionPda(a.inscriptionSig),
       collection: t.collection,
       collectionAuth: collectionAuthOf(registry),
@@ -113,15 +110,21 @@ export type OnChainSlot = {
   registeredAt: number;
 };
 
-// All ItemSlot accounts of one registry (memcmp on the registry field right
-// after the discriminator and bump). What makes a wiped database a restart.
-export async function fetchItemSlots(registry: PublicKey): Promise<OnChainSlot[]> {
-  const rows = await program.account.itemSlot.all([{ memcmp: { offset: 8 + 1, bytes: registry.toBase58() } }]);
-  return rows.map((r) => decodeSlot(r.account));
-}
+export type OnChainRegistry = {
+  minted: number;
+  maxSupply: number;
+  priceLamports: number;
+  depositLamports: number;
+  frozen: boolean;
+  treasury: string;
+  registrar: string;
+  admin: string;
+  bitmap: Uint8Array; // one bit per index, index i at bit i-1
+};
 
-export async function fetchRegistry(registry: PublicKey) {
-  const r = (await program.account.registry.fetch(registry)) as any;
+export async function fetchRegistry(registry: PublicKey): Promise<OnChainRegistry> {
+  const r = (await program.account.registry.fetchNullable(registry, "confirmed")) as any;
+  if (!r) throw new Error(`registry ${registry.toBase58()} not found on chain`);
   return {
     minted: r.minted as number,
     maxSupply: r.maxSupply as number,
@@ -131,22 +134,38 @@ export async function fetchRegistry(registry: PublicKey) {
     treasury: (r.treasury as PublicKey).toBase58(),
     registrar: (r.registrar as PublicKey).toBase58(),
     admin: (r.admin as PublicKey).toBase58(),
+    bitmap: Uint8Array.from(r.mintedBitmap as number[]),
   };
 }
 
-function decodeSlot(a: any): OnChainSlot {
-  return {
-    index: a.index as number,
-    owner: (a.owner as PublicKey).toBase58(),
-    asset: (a.asset as PublicKey).toBase58(),
-    inscriptionSig: bs58.encode(Buffer.from(a.inscriptionSig as number[])),
-    metaSig: bs58.encode(Buffer.from(a.metaSig as number[])),
-    registeredAt: Number(a.registeredAt),
-  };
+export const isMinted = (bitmap: Uint8Array, index: number): boolean =>
+  ((bitmap[(index - 1) >> 3] ?? 0) >> ((index - 1) & 7) & 1) === 1;
+
+export function mintedIndicesOf(bitmap: Uint8Array, maxSupply: number): number[] {
+  const out: number[] = [];
+  for (let i = 1; i <= maxSupply; i++) if (isMinted(bitmap, i)) out.push(i);
+  return out;
 }
 
-// One slot, or null when that index has not been minted on chain.
-export async function fetchItemSlot(registry: PublicKey, index: number): Promise<OnChainSlot | null> {
-  const a = await program.account.itemSlot.fetchNullable(itemSlotPda(registry, index), "confirmed");
-  return a ? decodeSlot(a) : null;
+// Every asset of a collection, read from Metaplex Core itself (getProgramAccounts
+// on mpl-core filtered by the collection), with the index and both inscription
+// sigs taken from the Attributes our program wrote. The on-chain index -> asset
+// map, and what makes a wiped database a restart.
+const umi = createUmi(config.rpcUrls[0], { commitment: "confirmed" });
+export async function fetchCollectionAssets(collection: PublicKey): Promise<OnChainSlot[]> {
+  const assets = await fetchAssetsByCollection(umi, umiPk(collection.toBase58()));
+  const out: OnChainSlot[] = [];
+  for (const a of assets) {
+    const attrs = Object.fromEntries(((a as any).attributes?.attributeList ?? []).map((x: any) => [x.key, x.value]));
+    if (!attrs.inscription || !attrs.metadata) continue; // not one of ours
+    out.push({
+      index: Number(attrs.index ?? 0),
+      owner: a.owner.toString(),
+      asset: a.publicKey.toString(),
+      inscriptionSig: bs58.encode(Buffer.from(attrs.inscription, "hex")),
+      metaSig: bs58.encode(Buffer.from(attrs.metadata, "hex")),
+      registeredAt: 0,
+    });
+  }
+  return out;
 }

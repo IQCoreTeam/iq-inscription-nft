@@ -1,12 +1,13 @@
 // The reconciler (every 5 min): make the local `slot` mirror match the chain
-// and confirm reservations off what actually landed. The chain is the source of
-// truth, so this is what makes a wiped database a restart: slots are rebuilt
-// from ItemSlot accounts, not from our own memory. It never expires anything.
+// and confirm reservations off what actually landed. The registry's minted
+// bitmap is the chain's sold set; the collection's assets (read from mpl-core)
+// give each sold index its asset, owner, C and M. The chain is the source of
+// truth, so a wiped database is a restart. It never expires anything.
 
 import { PublicKey } from "@solana/web3.js";
 import { db } from "./db.ts";
 import { listCollections, upsertSlot } from "./collections.ts";
-import { fetchItemSlots, fetchRegistry } from "./program.ts";
+import { fetchCollectionAssets, fetchRegistry, mintedIndicesOf } from "./program.ts";
 import { markConfirmed } from "./reservations.ts";
 
 const liveForItem = db.query<{ id: string }, [string, number]>(
@@ -19,23 +20,23 @@ export type ReconcileReport = { collections: number; slots: number; confirmed: n
 export async function reconcile(): Promise<ReconcileReport> {
   const report: ReconcileReport = { collections: 0, slots: 0, confirmed: 0, divergent: [] };
   for (const c of listCollections()) {
-    if (c.max_supply === 0) continue; // single-NFT registries have no slots
+    if (c.max_supply === 0) continue; // single-NFT registries have no numbers
     report.collections++;
-    const registry = new PublicKey(c.registry);
-    const slots = await fetchItemSlots(registry);
-    for (const s of slots) {
-      upsertSlot(c.slug, s);
-      for (const r of liveForItem.all(c.slug, s.index)) {
+    const reg = await fetchRegistry(new PublicKey(c.registry));
+    const sold = mintedIndicesOf(reg.bitmap, reg.maxSupply);
+    for (const index of sold) {
+      for (const r of liveForItem.all(c.slug, index)) {
         markConfirmed(r.id);
         report.confirmed++;
       }
     }
-    report.slots += slots.length;
-    const onChain = (await fetchRegistry(registry)).minted;
+    const assets = await fetchCollectionAssets(new PublicKey(c.core_collection));
+    for (const a of assets) upsertSlot(c.slug, a);
+    report.slots += assets.length;
     const local = countSlots.get(c.slug)!.n;
-    if (onChain !== local) {
+    if (sold.length !== reg.minted || assets.length !== sold.length || local !== sold.length) {
       report.divergent.push(c.slug);
-      console.error(`[reconciler] ${c.slug}: registry.minted=${onChain} but COUNT(slot)=${local}`);
+      console.error(`[reconciler] ${c.slug}: bitmap=${sold.length} registry.minted=${reg.minted} assets=${assets.length} mirror=${local}`);
     }
   }
   return report;

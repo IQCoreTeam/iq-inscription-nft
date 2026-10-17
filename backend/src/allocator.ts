@@ -12,9 +12,9 @@ import { randomUUID } from "node:crypto";
 import { PublicKey } from "@solana/web3.js";
 import { db, nowSec, type CollectionRow } from "./db.ts";
 import { config } from "./config.ts";
-import { getItem, permutationOf, upsertSlot } from "./collections.ts";
+import { getItem, permutationOf } from "./collections.ts";
 import { withConnection } from "./rpcpool.ts";
-import { fetchItemSlot } from "./program.ts";
+import { fetchRegistry, isMinted } from "./program.ts";
 import { markConfirmed } from "./reservations.ts";
 
 export class ReserveError extends Error {
@@ -101,12 +101,11 @@ export async function reserve(c: CollectionRow, wallet: string, burner: string, 
   await checkDeposit(c, burner, depositSig);
 
   const permutation = permutationOf(c);
-  const registry = new PublicKey(c.registry);
-
-  // Take the next index and hold it. Then ask the chain: if that index already
-  // has a slot (the DB was rolled back or someone minted around us), record the
-  // slot, keep the hold as confirmed so it is never offered again, and take the
-  // next one. One getAccountInfo per reservation in the normal case.
+  // The registry's minted bitmap is the chain's own sold list: one account read
+  // per reservation. An index whose bit is set (the DB was rolled back, or a
+  // mint happened around the backend) is held as confirmed so it is never
+  // offered again, and the next one is taken; the reconciler fills in its asset.
+  const { bitmap } = await fetchRegistry(new PublicKey(c.registry));
   let id: string;
   let index: number;
   let expiresAt: number;
@@ -132,10 +131,8 @@ export async function reserve(c: CollectionRow, wallet: string, burner: string, 
       db.run("ROLLBACK");
       throw e;
     }
-    const onChain = await fetchItemSlot(registry, index);
-    if (!onChain) break;
-    console.warn(`[reserve] ${c.slug} #${index} is already minted on chain but the DB did not know; recording and skipping`);
-    upsertSlot(c.slug, onChain);
+    if (!isMinted(bitmap, index)) break;
+    console.warn(`[reserve] ${c.slug} #${index} is already minted on chain but the DB did not know; holding and skipping`);
     markConfirmed(id);
   }
 

@@ -68,11 +68,8 @@ const authOf = (registry: PublicKey) =>
   PublicKey.findProgramAddressSync([Buffer.from("collection-auth"), registry.toBuffer()], PROGRAM_ID)[0];
 const registryPda = registryOf(collectionPk);
 const collectionAuthPda = authOf(registryPda);
-const itemSlotPda = (index: number, registry = registryPda) => {
-  const le = Buffer.alloc(4);
-  le.writeUInt32LE(index);
-  return PublicKey.findProgramAddressSync([Buffer.from("item"), registry.toBuffer(), le], PROGRAM_ID)[0];
-};
+// The registry's minted bitmap: index i lives at bit i-1.
+const bitSet = (bitmap: number[], index: number) => (bitmap[Math.floor((index - 1) / 8)] >> ((index - 1) % 8)) & 1;
 const inscriptionPda = (sig: number[]) =>
   PublicKey.findProgramAddressSync(
     [Buffer.from("inscription"), Buffer.from(sig.slice(0, 32)), Buffer.from(sig.slice(32))],
@@ -136,7 +133,6 @@ function registerItemIx(o: ItemOpts): Promise<TransactionInstruction> {
       owner: o.owner ?? ownerKp.publicKey,
       registrar: o.registrar ?? registrarKp.publicKey,
       registry,
-      itemSlot: itemSlotPda(o.index, registry),
       inscriptionRecord: inscriptionPda(sig),
       collection: o.collection ?? collectionPk,
       collectionAuth: authOf(registry),
@@ -299,7 +295,7 @@ async function main() {
 
   // -- happy path: price 0, owner is not the payer --
   const asset1 = Keypair.generate();
-  await test("register_item: asset to owner, slot + inscription record populated, 4 attributes, registrar pays nothing", async () => {
+  await test("register_item: asset to owner, bit set, inscription record populated, 4 attributes, registrar pays nothing", async () => {
     const before = {
       registrar: await lamports(registrarKp.publicKey),
       minter: await lamports(minterKp.publicKey),
@@ -318,18 +314,18 @@ async function main() {
     assert.equal(after.platform - before.platform, 0, "fee on price 0 is 0");
     assert.ok(before.minter - after.minter > 0, "the burner pays fees and rent");
 
-    const slot: any = await (program.account as any).itemSlot.fetch(itemSlotPda(1));
-    assert.equal(slot.index, 1);
-    assert.equal(slot.registry.toBase58(), registryPda.toBase58());
-    assert.equal(slot.owner.toBase58(), ownerKp.publicKey.toBase58());
-    assert.equal(slot.asset.toBase58(), asset1.publicKey.toBase58());
-    assert.deepEqual(Array.from(slot.contentHash), hashOf(1));
-    assert.deepEqual(Array.from(slot.inscriptionSig), sigOf(1));
-    assert.deepEqual(Array.from(slot.metaSig), sigOf(1001));
+    const regAfter: any = await (program.account as any).registry.fetch(registryPda);
+    const bitmap = Array.from(regAfter.mintedBitmap as number[]);
+    assert.equal(bitmap.length, Math.ceil(MAX_SUPPLY / 8), "bitmap sized from max_supply");
+    assert.equal(bitSet(bitmap, 1), 1, "bit 1 set");
+    assert.equal(bitSet(bitmap, 2), 0, "bit 2 clear");
 
     const rec: any = await (program.account as any).inscriptionRecord.fetch(inscriptionPda(sigOf(1)));
     assert.equal(rec.asset.toBase58(), asset1.publicKey.toBase58());
     assert.equal(rec.collection.toBase58(), collectionPk.toBase58());
+    assert.equal(rec.index, 1);
+    assert.deepEqual(Array.from(rec.contentHash), hashOf(1));
+    assert.deepEqual(Array.from(rec.metaSig), sigOf(1001));
 
     const asset = await fetchAssetV1(umi, umiPk(asset1.publicKey.toBase58()));
     assert.equal(asset.owner.toString(), ownerKp.publicKey.toBase58(), "owner is the user wallet, not the burner");
@@ -351,8 +347,8 @@ async function main() {
     assert.equal(reg.minted, 1);
   });
 
-  await test("duplicate index fails (slot already in use)", async () => {
-    await expectFail(sendItem({ index: 1, asset: PublicKey.default, inscriptionSig: sigOf(500) }, Keypair.generate()), "already in use", "index 1 twice");
+  await test("duplicate index fails (bit already set)", async () => {
+    await expectFail(sendItem({ index: 1, asset: PublicKey.default, inscriptionSig: sigOf(500) }, Keypair.generate()), "IndexAlreadyMinted", "index 1 twice");
   });
 
   await test("duplicate inscription fails on a fresh index (one NFT per inscription)", async () => {
@@ -369,8 +365,10 @@ async function main() {
     tx.feePayer = minterKp.publicKey;
     tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
     tx.sign(minterKp, a, b, registrarKp);
-    await expectFail(connection.sendRawTransaction(tx.serialize()), "already in use", "double in one tx");
-    assert.equal(await connection.getAccountInfo(itemSlotPda(2)), null, "rolled back");
+    await expectFail(connection.sendRawTransaction(tx.serialize()), "IndexAlreadyMinted", "double in one tx");
+    assert.equal(await connection.getAccountInfo(inscriptionPda(sigOf(2))), null, "first instruction rolled back");
+    const reg: any = await (program.account as any).registry.fetch(registryPda);
+    assert.equal(bitSet(Array.from(reg.mintedBitmap), 2), 0, "bit 2 still clear after rollback");
   });
 
   await test("wrong registrar signer rejected", async () => {
@@ -560,6 +558,7 @@ async function main() {
     );
     const rec: any = await (program.account as any).inscriptionRecord.fetch(inscriptionPda(sig));
     assert.equal(rec.collection.toBase58(), singlePk.toBase58());
+    assert.equal(rec.index, 0, "single NFTs carry index 0");
 
     // the same inscription again, anywhere, is refused
     await expectFail(sendItem({ index: 8, asset: PublicKey.default, inscriptionSig: sig }, Keypair.generate()), "already in use", "single's sig as an item");

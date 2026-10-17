@@ -6,7 +6,7 @@ Spec: IQCoreTeam/iq6900 issue #11.
 
 ## What the program enforces
 
-- an item index is usable at most once per collection (`ItemSlot` PDA init)
+- an item index is usable at most once per collection (a minted bitmap in the registry: one bit per index, set by `register_item`, refused if already set)
 - an inscription is usable at most once anywhere (`InscriptionRecord` PDA init)
 - only the registrar may admit an asset into a collection (co-signature)
 - the collection authority is a PDA, so no key exists to forge membership
@@ -19,7 +19,7 @@ What it does not enforce: that the inscription behind `inscription_sig` holds th
 | ix | who signs | what |
 |---|---|---|
 | `initialize_registry` | payer (the creator's burner) | one registry per Core collection; `admin` is an arg so the creator wallet holds the admin rights |
-| `register_item` | minter (burner, fee payer) + registrar | slot + inscription record + Core asset to `owner`; Attributes `index`, `inscription`, `metadata`, `std` |
+| `register_item` | minter (burner, fee payer) + registrar | sets the index bit + inscription record + Core asset to `owner`; Attributes `index`, `inscription`, `metadata`, `std` |
 | `register_single` | minter + registrar | single NFT into a registry with `max_supply` 0; inscription record only |
 | `set_price`, `set_frozen`, `rotate_registrar` | admin | |
 | `set_royalties` | admin | rewrites the collection's Royalties plugin through the PDA |
@@ -62,7 +62,7 @@ Scripts (run with `bun --env-file=backend/.env.<cluster> backend/scripts/<name>.
 | | |
 |---|---|
 | program | `FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu` (upgrade authority: the deploy wallet) |
-| test collection `test-monks` | Core collection `Cs1UhRLFyAP3AZ2Xp5SNM9VnNpxjG493uz5awZCWTsX9`, registry `26B8MGpSguuY2Q6ffrUfo3bKLscbcEiuWpsejWqDEWrQ`, 5 items, price 0.01 SOL, deposit 0.002 SOL |
-| single-NFT collection `iq6900-inscriptions` | Core collection `R2QmKTZq22BvhVX8dnzkg4rMkj5uz7WuaDRsF3CuAaE`, registry `2f1cehnQTS2PgUT9h1ub2BnWLThzbSXoSXbnX6VQk7uk` |
+| test collection `test-monks` | Core collection `GGATdiggheD9GiGd4PYuwigJDqGTWS1Gg5fGWR3EuaN7`, registry `H53fr5GmxmUVhKeLa3eECL9jgk9FKuN7fE6MPTz54Bt4`, 5 items, price 0.01 SOL, deposit 0.002 SOL |
+| single-NFT collection `iq6900-inscriptions` | Core collection `HjnPauwiZ4xnPCH5vWbiiDiRG8pPn9Mgi5Q9uJ266ZjD`, registry `33oFdBncytyYNXg1V578crE9Du6Y3Xp2QRsU5W9rzBFU` |
 
 `mint-e2e.ts` passes 12 checks against `test-monks` on devnet.

@@ -15,10 +15,10 @@ import { parseArgs } from "node:util";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
-import { Connection, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { keypairIdentity, publicKey as umiPk, generateSigner } from "@metaplex-foundation/umi";
-import { fromWeb3JsKeypair, toWeb3JsPublicKey } from "@metaplex-foundation/umi-web3js-adapters";
+import { fromWeb3JsKeypair, toWeb3JsKeypair, toWeb3JsPublicKey, toWeb3JsInstruction } from "@metaplex-foundation/umi-web3js-adapters";
 import { createCollection, ruleSet } from "@metaplex-foundation/mpl-core";
 import * as anchor from "@coral-xyz/anchor";
 import BN from "bn.js";
@@ -113,12 +113,15 @@ async function main() {
   const metaSig = await writer.codeIn({ connection, signer: creator }, collectionJson, `${a.slug}-collection.json`, 0, "json");
   console.log(`  collection.json -> ${metaSig}`);
 
-  // 4. Core collection under the program PDA, royalties to the creator.
+  // 4 + 5. The Core collection (authority = our PDA) and initialize_registry in
+  // ONE transaction, so nobody can initialize a registry for this collection
+  // between the two (the registry seed is the collection address and
+  // initialize_registry is permissionless on purpose).
   const umi = createUmi(connection.rpcEndpoint, { commitment: "confirmed" }).use(keypairIdentity(fromWeb3JsKeypair(creator)));
   const collectionSigner = generateSigner(umi);
   const collectionPk = toWeb3JsPublicKey(collectionSigner.publicKey);
   const registry = registryOf(collectionPk);
-  await createCollection(umi, {
+  const createIxs = createCollection(umi, {
     collection: collectionSigner,
     updateAuthority: umiPk(collectionAuthOf(registry).toBase58()),
     name: a.name!,
@@ -126,14 +129,14 @@ async function main() {
     plugins: [
       { type: "Royalties", basisPoints: Number(a["royalty-bps"]), creators: [{ address: umiPk(creator.publicKey.toBase58()), percentage: 100 }], ruleSet: ruleSet("None") },
     ],
-  }).sendAndConfirm(umi);
-  console.log(`  core collection ${collectionPk.toBase58()}, registry ${registry.toBase58()}`);
+  })
+    .getInstructions()
+    .map(toWeb3JsInstruction);
 
-  // 5. initialize_registry: payer = creator keypair, admin = creator wallet.
   const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(creator), { commitment: "confirmed" });
   const program = new anchor.Program(idl, provider);
   const sig64 = (s: string) => (s ? Array.from(anchor.utils.bytes.bs58.decode(s)) : new Array(64).fill(0));
-  await program.methods
+  const initIx = await program.methods
     .initializeRegistry(
       items.length,
       Array.from(Buffer.from(manifestHash, "hex")),
@@ -152,8 +155,10 @@ async function main() {
       collectionAuth: collectionAuthOf(registry),
       systemProgram: SystemProgram.programId,
     })
-    .rpc();
-  console.log(`  initialize_registry done`);
+    .instruction();
+  const tx = new Transaction().add(...createIxs, initIx);
+  await sendAndConfirmTransaction(connection, tx, [creator, toWeb3JsKeypair(collectionSigner)], { commitment: "confirmed" });
+  console.log(`  core collection ${collectionPk.toBase58()} + registry ${registry.toBase58()} (one tx)`);
 
   // 6. Backend DB.
   db.run("BEGIN");

@@ -2,7 +2,8 @@
 //
 // A fork of bible-registrar generalized from "one Bible verse" to "one creator
 // item". What the program enforces on-chain:
-//   - an item index is usable at most once per collection (ItemSlot PDA init)
+//   - an item index is usable at most once per collection (a minted bitmap in
+//     the registry: one bit per index, set by register_item, refused if set)
 //   - an inscription is usable at most once anywhere (InscriptionRecord PDA init)
 //   - only the registrar may admit an asset into a collection (co-signature)
 //   - the collection authority is a PDA, so no key exists to forge membership
@@ -26,7 +27,6 @@ use mpl_core::types::{
 declare_id!("FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu");
 
 const REGISTRY_SEED: &[u8] = b"registry";
-const ITEM_SEED: &[u8] = b"item";
 const INSCRIPTION_SEED: &[u8] = b"inscription";
 const COLLECTION_AUTH_SEED: &[u8] = b"collection-auth";
 const MAX_NAME_BYTES: usize = 80;
@@ -83,10 +83,11 @@ pub mod iq_inscription_nft {
         registry.manifest_sig = manifest_sig;
         registry.shuffle_commit = shuffle_commit;
         registry.frozen = false;
+        registry.minted_bitmap = vec![0u8; Registry::bitmap_len(max_supply)];
         Ok(())
     }
 
-    // Collection item: index-bound slot + global inscription record + Core asset.
+    // Collection item: flip the index's bit + global inscription record + Core asset.
     // The minter account is the fee payer (the user's burner); the asset goes to
     // `owner` (the user's wallet).
     pub fn register_item(
@@ -111,28 +112,29 @@ pub mod iq_inscription_nft {
         );
         require!(name.len() <= MAX_NAME_BYTES, ErrorCode::NameTooLong);
         require!(uri.len() <= MAX_URI_BYTES, ErrorCode::UriTooLong);
+        let price = registry.price_lamports;
+        // The deposit was paid to the creator at reservation (off-chain, plain
+        // transfer), so only the remainder moves here. The platform fee is on the
+        // full price and comes from the minter on top.
+        let due = price.saturating_sub(registry.deposit_lamports);
+        let collection = registry.collection;
 
-        let slot = &mut ctx.accounts.item_slot;
-        slot.bump = ctx.bumps.item_slot;
-        slot.registry = registry.key();
-        slot.index = index;
-        slot.owner = ctx.accounts.owner.key();
-        slot.asset = ctx.accounts.asset.key();
-        slot.content_hash = content_hash;
-        slot.inscription_sig = inscription_sig;
-        slot.meta_sig = meta_sig;
-        slot.registered_at = Clock::get()?.unix_timestamp;
+        // The "one token per number" mark. The runtime cannot know whether #57
+        // exists, so the registry remembers: bit set means sold.
+        let (byte, mask) = Registry::bit(index);
+        let registry = &mut ctx.accounts.registry;
+        require!(registry.minted_bitmap[byte] & mask == 0, ErrorCode::IndexAlreadyMinted);
+        registry.minted_bitmap[byte] |= mask;
+        registry.minted = registry.minted.checked_add(1).unwrap();
 
         let record = &mut ctx.accounts.inscription_record;
         record.bump = ctx.bumps.inscription_record;
         record.asset = ctx.accounts.asset.key();
-        record.collection = registry.collection;
+        record.collection = collection;
+        record.index = index;
+        record.content_hash = content_hash;
+        record.meta_sig = meta_sig;
 
-        // The deposit was paid to the creator at reservation (off-chain, plain
-        // transfer), so only the remainder moves here. The platform fee is on the
-        // full price and comes from the minter on top.
-        let price = registry.price_lamports;
-        let due = price.saturating_sub(registry.deposit_lamports);
         pay(
             &ctx.accounts.system_program,
             &ctx.accounts.minter,
@@ -141,9 +143,6 @@ pub mod iq_inscription_nft {
             due,
             price,
         )?;
-
-        let registry = &mut ctx.accounts.registry;
-        registry.minted = registry.minted.checked_add(1).unwrap();
 
         // On-chain identity, derived from args so it costs no transaction bytes:
         // index as decimal, sigs as lowercase hex (base58 is an expensive bignum
@@ -195,6 +194,9 @@ pub mod iq_inscription_nft {
         record.bump = ctx.bumps.inscription_record;
         record.asset = ctx.accounts.asset.key();
         record.collection = registry.collection;
+        record.index = 0;
+        record.content_hash = [0u8; 32];
+        record.meta_sig = meta_sig;
 
         let price = registry.price_lamports;
         pay(
@@ -444,43 +446,45 @@ pub struct Registry {
     pub manifest_sig: [u8; 64],
     pub shuffle_commit: [u8; 32],
     pub frozen: bool,
+    // One bit per item index (1-based: index i lives at bit i-1). Sized at
+    // initialize_registry from max_supply; never grows. The whole sold set is
+    // one account read.
+    pub minted_bitmap: Vec<u8>,
 }
 
 impl Registry {
-    pub const LEN: usize = 8 + 1 + 1 + 32 + 32 + 32 + 32 + 4 + 4 + 8 + 8 + 32 + 64 + 32 + 1;
+    pub const BASE_LEN: usize = 8 + 1 + 1 + 32 + 32 + 32 + 32 + 4 + 4 + 8 + 8 + 32 + 64 + 32 + 1 + 4;
+    pub fn bitmap_len(max_supply: u32) -> usize {
+        (max_supply as usize + 7) / 8
+    }
+    pub fn space(max_supply: u32) -> usize {
+        Self::BASE_LEN + Self::bitmap_len(max_supply)
+    }
+    pub fn bit(index: u32) -> (usize, u8) {
+        let i = (index - 1) as usize;
+        (i / 8, 1u8 << (i % 8))
+    }
 }
 
-#[account]
-pub struct ItemSlot {
-    pub bump: u8,
-    // Which registry this slot belongs to, so indexers and the backend reconciler
-    // can memcmp-filter slots per collection (the seed alone is not filterable).
-    pub registry: Pubkey,
-    pub index: u32,
-    pub owner: Pubkey,
-    pub asset: Pubkey,
-    pub content_hash: [u8; 32],
-    pub inscription_sig: [u8; 64],
-    pub meta_sig: [u8; 64],
-    pub registered_at: i64,
-}
-
-impl ItemSlot {
-    pub const LEN: usize = 8 + 1 + 32 + 4 + 32 + 32 + 32 + 64 + 64 + 8;
-}
-
+// One per inscription, anywhere: the same C can never back two tokens. Also
+// the on-chain record of what that token is (its index and hashes), so a
+// collection can be enumerated from these without an indexer.
 #[account]
 pub struct InscriptionRecord {
     pub bump: u8,
     pub asset: Pubkey,
     pub collection: Pubkey,
+    pub index: u32, // 0 for single NFTs
+    pub content_hash: [u8; 32],
+    pub meta_sig: [u8; 64],
 }
 
 impl InscriptionRecord {
-    pub const LEN: usize = 8 + 1 + 32 + 32;
+    pub const LEN: usize = 8 + 1 + 32 + 32 + 4 + 32 + 64;
 }
 
 #[derive(Accounts)]
+#[instruction(max_supply: u32)]
 pub struct InitializeRegistry<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -491,7 +495,7 @@ pub struct InitializeRegistry<'info> {
     #[account(
         init,
         payer = payer,
-        space = Registry::LEN,
+        space = Registry::space(max_supply),
         seeds = [REGISTRY_SEED, collection.key().as_ref()],
         bump
     )]
@@ -521,15 +525,6 @@ pub struct RegisterItem<'info> {
         bump = registry.bump
     )]
     pub registry: Account<'info, Registry>,
-
-    #[account(
-        init,
-        payer = minter,
-        space = ItemSlot::LEN,
-        seeds = [ITEM_SEED, registry.key().as_ref(), &index.to_le_bytes()],
-        bump
-    )]
-    pub item_slot: Account<'info, ItemSlot>,
 
     #[account(
         init,
@@ -713,6 +708,8 @@ pub enum ErrorCode {
     UnauthorizedRegistrar,
     #[msg("item index is outside 1..max_supply")]
     IndexOutOfRange,
+    #[msg("this item index has already been minted")]
+    IndexAlreadyMinted,
     #[msg("the collection's update authority is not this program's PDA")]
     CollectionNotUnderProgramAuthority,
     #[msg("asset name exceeds 80 bytes")]
