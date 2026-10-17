@@ -42,6 +42,8 @@ export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 
 ## Backend
 
+Full description with diagrams: [backend/README.md](backend/README.md).
+
 `backend/` is the reserve / verify / co-sign service (Bun + Hono + SQLite), a fork of bible-nft's backend generalized to many collections. One process serves every collection; collections and their item manifests live in SQLite, the registrar key and the RPC pool stay in the process.
 
 ```
