@@ -58,7 +58,7 @@ export const config = {
   // The slug of the global single-NFT collection (max_supply 0) that
   // /single/mint registers into.
   singleSlug: env("SINGLE_SLUG", "iq6900-inscriptions"),
-  siteBase: env("SITE_BASE", "https://iq6900.com").replace(/\/$/, ""),
+  siteBase: env("SITE_BASE", "https://iqlabs.dev").replace(/\/$/, ""),
 
   // A reservation holds an index for this long; the client re-arms it right
   // before inscribing (/reserve/touch). Slack past expiry before the reaper acts.
