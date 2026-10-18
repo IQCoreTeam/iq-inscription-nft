@@ -81,8 +81,15 @@ app.get("/c/:slug/items", (c) => {
     )
     .all(col.slug, limit, offset);
   const minted = new Set(mintedIndices(col.slug));
+  // Asset address per minted index, so the client can link a minted cell to the
+  // on-chain NFT viewer. Only minted items have a slot row.
+  const assetByIndex = new Map<number, string>();
+  for (const s of db
+    .query<{ item_index: number; asset: string }, [string]>("SELECT item_index, asset FROM slot WHERE slug = ?")
+    .all(col.slug))
+    assetByIndex.set(s.item_index, s.asset);
   return c.json({
-    items: rows.map((r) => ({ index: r.item_index, name: r.name, arweaveId: r.arweave_id, mime: r.image_mime, minted: minted.has(r.item_index) })),
+    items: rows.map((r) => ({ index: r.item_index, name: r.name, arweaveId: r.arweave_id, mime: r.image_mime, minted: minted.has(r.item_index), asset: assetByIndex.get(r.item_index) ?? null })),
     total: col.max_supply,
   });
 });
