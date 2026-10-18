@@ -70,7 +70,14 @@ export const config = {
   reconcileMs: Number(env("RECONCILE_MS", "300000")),
   reaperMs: Number(env("REAPER_MS", "60000")),
 
-  corsOrigin: env("CORS_ORIGIN", "*"),
+  // Comma-separated list, so one deployment can serve several front-ends
+  // (e.g. iqlabs.dev and iq6900.com). Hono's cors() matches an array exactly
+  // and echoes back the caller's origin; a bare "*" stays a wildcard.
+  corsOrigin: ((raw) => {
+    if (raw.trim() === "*") return "*";
+    const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    return list.length === 1 ? list[0]! : list;
+  })(env("CORS_ORIGIN", "*")),
 
   // Permanent image storage on Arweave via Irys, paid in SOL by the creator's
   // deploy flow (deploy-collection) or an ops key. Optional for the API process.
