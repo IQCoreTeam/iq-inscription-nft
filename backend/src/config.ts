@@ -82,4 +82,10 @@ export const config = {
 
   maxOpenReservationsPerWallet: Number(env("MAX_OPEN_RESERVATIONS_PER_WALLET", "3")),
   reservePerIpPerMinute: Number(env("RESERVE_PER_IP_PER_MINUTE", "10")),
+
+  // Creator deploy fee, paid by the creator to the platform treasury inside the
+  // deploy tx. Covers the Arweave upload the backend fronts (ops key) plus a
+  // margin, so the platform is not out of pocket at scale. Placeholder amounts.
+  deployFeeBase: Number(env("DEPLOY_FEE_BASE", "10000000")), // 0.01 SOL
+  deployFeePerItem: Number(env("DEPLOY_FEE_PER_ITEM", "300000")), // 0.0003 SOL/item
 };

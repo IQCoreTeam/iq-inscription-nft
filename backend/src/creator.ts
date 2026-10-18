@@ -18,11 +18,16 @@ import * as anchor from "@coral-xyz/anchor";
 import BN from "bn.js";
 import { config } from "./config.ts";
 import { db, nowSec } from "./db.ts";
-import { program, registryOf, collectionAuthOf } from "./program.ts";
+import { program, registryOf, collectionAuthOf, PLATFORM_TREASURY } from "./program.ts";
 import { uploadToArweave } from "./arweave.ts";
 import { assetUri } from "./metadata.ts";
 
 const sha256 = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
+
+// The creator deploy fee (covers the backend-fronted Arweave upload + margin),
+// paid to the platform treasury inside the deploy tx. Shown to the creator before
+// they sign. itemCount 0 (single registry) still pays the base.
+export const deployFee = (itemCount: number) => config.deployFeeBase + config.deployFeePerItem * itemCount;
 
 export type DeploySpec = {
   slug: string;
@@ -119,7 +124,11 @@ export async function buildDeploy(args: {
     })
     .instruction();
 
-  return { tx: new Transaction().add(...createIxs, initIx), registry };
+  const tx = new Transaction().add(...createIxs, initIx);
+  // Deploy fee: creator -> platform treasury, atomic with the deploy (no extra signature).
+  const fee = deployFee(args.itemCount);
+  if (fee > 0) tx.add(SystemProgram.transfer({ fromPubkey: args.creatorPubkey, toPubkey: PLATFORM_TREASURY, lamports: fee }));
+  return { tx, registry };
 }
 
 // Write the collection + item rows after the deploy tx has landed. Idempotent on
