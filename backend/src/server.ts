@@ -24,7 +24,11 @@ app.use(
   cors({
     origin: (origin) => {
       if (config.corsOrigins.includes("*")) return origin || "*";
-      return config.corsOrigins.includes(origin) ? origin : null;
+      if (config.corsOrigins.includes(origin)) return origin;
+      // Dev convenience: on devnet, allow localhost so a branch can be tested
+      // from a local static server. Never on mainnet.
+      if (config.cluster === "devnet" && origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return origin;
+      return null;
     },
   }),
 );
