@@ -70,7 +70,9 @@ export const config = {
   reconcileMs: Number(env("RECONCILE_MS", "300000")),
   reaperMs: Number(env("REAPER_MS", "60000")),
 
-  corsOrigin: env("CORS_ORIGIN", "*"),
+  // Comma-separated allowlist; "*" allows any origin. The launchpad is served
+  // under both iqlabs.dev and iq6900.com, so both must be allowed.
+  corsOrigins: env("CORS_ORIGIN", "*").split(",").map((s) => s.trim()).filter(Boolean),
 
   // Permanent image storage on Arweave via Irys, paid in SOL by the creator's
   // deploy flow (deploy-collection) or an ops key. Optional for the API process.

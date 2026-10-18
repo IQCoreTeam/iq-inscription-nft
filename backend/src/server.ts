@@ -19,7 +19,15 @@ import { reap } from "./reaper.ts";
 import { poolStats } from "./rpcpool.ts";
 
 export const app = new Hono();
-app.use("*", cors({ origin: config.corsOrigin }));
+app.use(
+  "*",
+  cors({
+    origin: (origin) => {
+      if (config.corsOrigins.includes("*")) return origin || "*";
+      return config.corsOrigins.includes(origin) ? origin : null;
+    },
+  }),
+);
 
 let lastReconcile: ReconcileReport | null = null;
 
