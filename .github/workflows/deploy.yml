@@ -43,6 +43,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # GHCR repository names must be lowercase; the owner (IQCoreTeam) is not.
+      - name: Lowercase the image owner
+        id: img
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push the backend image
         uses: docker/build-push-action@v6
         with:
@@ -53,8 +58,8 @@ jobs:
           provenance: false
           sbom: false
           tags: |
-            ghcr.io/${{ github.repository_owner }}/iq-inscription-nft:main
-            ghcr.io/${{ github.repository_owner }}/iq-inscription-nft:${{ github.sha }}
+            ghcr.io/${{ steps.img.outputs.owner }}/iq-inscription-nft:main
+            ghcr.io/${{ steps.img.outputs.owner }}/iq-inscription-nft:${{ github.sha }}
 
       - name: Trigger the server deploy
         env:
