@@ -12,22 +12,13 @@
 //     creates a max_supply 0 registry for single NFTs (no folder).
 
 import { parseArgs } from "node:util";
-import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
-import { Connection, Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
-import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
-import { keypairIdentity, publicKey as umiPk, generateSigner } from "@metaplex-foundation/umi";
-import { fromWeb3JsKeypair, toWeb3JsKeypair, toWeb3JsPublicKey, toWeb3JsInstruction } from "@metaplex-foundation/umi-web3js-adapters";
-import { createCollection, ruleSet } from "@metaplex-foundation/mpl-core";
-import * as anchor from "@coral-xyz/anchor";
-import BN from "bn.js";
+import { Connection, Keypair, sendAndConfirmTransaction } from "@solana/web3.js";
 import { writer } from "@iqlabs-official/solana-sdk";
-import { config, idl } from "../src/config.ts";
-import { db, nowSec } from "../src/db.ts";
-import { registryOf, collectionAuthOf } from "../src/program.ts";
-import { uploadToArweave } from "../src/arweave.ts";
-import { assetUri } from "../src/metadata.ts";
+import { config } from "../src/config.ts";
+import { db } from "../src/db.ts";
+import { stageCollection, buildDeploy, recordCollection, type DeploySpec, type StageItem } from "../src/creator.ts";
 import { dbRootSeed, feedSeed, userInventoryPda } from "../src/feed.ts";
 
 const { values: a } = parseArgs({
@@ -52,7 +43,6 @@ if (!/^[a-z0-9-]{3,32}$/.test(a.slug!)) throw new Error("slug must be 3..32 of [
 if (db.query("SELECT 1 FROM collection WHERE slug = ?").get(a.slug!)) throw new Error(`slug ${a.slug} already exists in the backend DB`);
 
 const MIME: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
-const sha256 = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
 const creator = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(a.creator!.replace(/^~/, process.env.HOME!), "utf8"))));
 const connection = new Connection(config.rpcUrls[0], "confirmed");
 const price = Number(a.price);
@@ -60,8 +50,7 @@ const deposit = Number(a.deposit);
 if (deposit > price) throw new Error("deposit cannot exceed price");
 
 // 1. Items: read the folder, pair image i with template i.
-type Item = { index: number; name: string; bytes: Buffer; mime: string; template: Record<string, unknown> };
-function readItems(dir: string): Item[] {
+function readItems(dir: string): StageItem[] {
   const files = readdirSync(dir);
   const images = files.filter((f) => MIME[extname(f).toLowerCase()] && /^\d+\./.test(f));
   const numbers = images.map((f) => Number(f.split(".")[0])).sort((x, y) => x - y);
@@ -83,109 +72,40 @@ function readItems(dir: string): Item[] {
 }
 
 async function main() {
-  const items = a.single ? [] : readItems(a.dir!);
-  console.log(`${a.slug}: ${items.length} items, price ${price}, deposit ${deposit}, creator ${creator.publicKey.toBase58()}`);
+  const items: StageItem[] = a.single ? [] : readItems(a.dir!);
+  const spec: DeploySpec = { slug: a.slug!, name: a.name!, symbol: a.symbol!, description: a.description!, price, deposit, royaltyBps: Number(a["royalty-bps"]), sequential: !!a.sequential };
+  console.log(`${spec.slug}: ${items.length} items, price ${price}, deposit ${deposit}, creator ${creator.publicKey.toBase58()}`);
 
-  // 2. Images to Arweave (permanent buffer), hashes for the manifest.
-  const manifestItems: { index: number; name: string; image_sha256: string; image_mime: string; meta_sha256: string; arweave_id: string }[] = [];
-  for (const it of items) {
-    const arweave_id = await uploadToArweave(it.bytes, it.mime);
-    const templateJson = JSON.stringify(it.template);
-    manifestItems.push({ index: it.index, name: it.name, image_sha256: sha256(it.bytes), image_mime: it.mime, meta_sha256: sha256(templateJson), arweave_id });
-    console.log(`  item ${it.index} -> arweave ${arweave_id} (${it.bytes.length} B)`);
-  }
+  // Images to Arweave + the manifest/collection.json bytes (shuffle seed stays server-side).
+  const staged = await stageCollection(spec, items);
+  for (const m of staged.manifestItems) console.log(`  item ${m.index} -> arweave ${m.arweave_id}`);
 
-  // 3. Manifest and collection.json inscribed by the creator.
-  const seed = randomBytes(32);
-  const shuffleCommit = sha256(seed);
-  const manifestJson = JSON.stringify({ std: "iqnft-0.1", slug: a.slug, name: a.name, shuffle_commit: shuffleCommit, items: manifestItems });
-  const manifestHash = sha256(manifestJson);
-  const manifestSig = a.single ? "" : await writer.codeIn({ connection, signer: creator }, manifestJson, `${a.slug}-manifest.json`, 0, "json");
+  // The creator inscribes the manifest (unless single) and collection.json.
+  const manifestSig = a.single ? "" : await writer.codeIn({ connection, signer: creator }, staged.manifestJson, `${spec.slug}-manifest.json`, 0, "json");
   if (manifestSig) console.log(`  manifest -> ${manifestSig}`);
-  const collectionJson = JSON.stringify({
-    name: a.name,
-    symbol: a.symbol,
-    description: a.description,
-    image: items.length ? `${config.arweaveGateway}/${manifestItems[0].arweave_id}` : "",
-    external_url: `${config.siteBase}/c/${a.slug}`,
-    properties: { category: "image" },
-  });
-  const metaSig = await writer.codeIn({ connection, signer: creator }, collectionJson, `${a.slug}-collection.json`, 0, "json");
+  const metaSig = await writer.codeIn({ connection, signer: creator }, staged.collectionJson, `${spec.slug}-collection.json`, 0, "json");
   console.log(`  collection.json -> ${metaSig}`);
 
-  // 4 + 5. The Core collection (authority = our PDA) and initialize_registry in
-  // ONE transaction, so nobody can initialize a registry for this collection
-  // between the two (the registry seed is the collection address and
-  // initialize_registry is permissionless on purpose).
-  const umi = createUmi(connection.rpcEndpoint, { commitment: "confirmed" }).use(keypairIdentity(fromWeb3JsKeypair(creator)));
-  const collectionSigner = generateSigner(umi);
-  const collectionPk = toWeb3JsPublicKey(collectionSigner.publicKey);
-  const registry = registryOf(collectionPk);
-  const createIxs = createCollection(umi, {
-    collection: collectionSigner,
-    updateAuthority: umiPk(collectionAuthOf(registry).toBase58()),
-    name: a.name!,
-    uri: assetUri(metaSig),
-    plugins: [
-      { type: "Royalties", basisPoints: Number(a["royalty-bps"]), creators: [{ address: umiPk(creator.publicKey.toBase58()), percentage: 100 }], ruleSet: ruleSet("None") },
-    ],
-  })
-    .getInstructions()
-    .map(toWeb3JsInstruction);
+  // Core collection + initialize_registry in one tx; the creator and the fresh
+  // collection keypair sign.
+  const collection = Keypair.generate();
+  const { tx, registry } = await buildDeploy({ connection, creatorPubkey: creator.publicKey, collectionPubkey: collection.publicKey, spec, itemCount: staged.itemCount, manifestHash: staged.manifestHash, manifestSig, shuffleCommit: staged.shuffleCommit, metaSig });
+  await sendAndConfirmTransaction(connection, tx, [creator, collection], { commitment: "confirmed" });
+  console.log(`  core collection ${collection.publicKey.toBase58()} + registry ${registry.toBase58()} (one tx)`);
 
-  const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(creator), { commitment: "confirmed" });
-  const program = new anchor.Program(idl, provider);
-  const sig64 = (s: string) => (s ? Array.from(anchor.utils.bytes.bs58.decode(s)) : new Array(64).fill(0));
-  const initIx = await program.methods
-    .initializeRegistry(
-      items.length,
-      Array.from(Buffer.from(manifestHash, "hex")),
-      sig64(manifestSig),
-      Array.from(Buffer.from(shuffleCommit, "hex")),
-      config.registrar.publicKey,
-      creator.publicKey,
-      new BN(price),
-      new BN(deposit),
-      creator.publicKey
-    )
-    .accountsStrict({
-      payer: creator.publicKey,
-      collection: collectionPk,
-      registry,
-      collectionAuth: collectionAuthOf(registry),
-      systemProgram: SystemProgram.programId,
-    })
-    .instruction();
-  const tx = new Transaction().add(...createIxs, initIx);
-  await sendAndConfirmTransaction(connection, tx, [creator, toWeb3JsKeypair(collectionSigner)], { commitment: "confirmed" });
-  console.log(`  core collection ${collectionPk.toBase58()} + registry ${registry.toBase58()} (one tx)`);
+  recordCollection({ spec, collectionPubkey: collection.publicKey, registry, creatorPubkey: creator.publicKey, staged, items, manifestSig, metaSig });
 
-  // 6. Backend DB.
-  db.run("BEGIN");
-  db.query(
-    `INSERT INTO collection (slug, core_collection, registry, name, symbol, description, creator, treasury, max_supply,
-       price_lamports, deposit_lamports, sequential, shuffle_seed, shuffle_commit, manifest_sig, manifest_hash, meta_sig, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)`
-  ).run(a.slug!, collectionPk.toBase58(), registry.toBase58(), a.name!, a.symbol!, a.description!, creator.publicKey.toBase58(), items.length,
-    price, deposit, a.sequential ? 1 : 0, seed.toString("hex"), shuffleCommit, manifestSig, manifestHash, metaSig, nowSec());
-  const ins = db.query("INSERT INTO item (slug, item_index, name, image_sha256, image_mime, meta_sha256, arweave_id, template) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)");
-  for (const it of items) {
-    const m = manifestItems.find((x) => x.index === it.index)!;
-    ins.run(a.slug!, it.index, it.name, m.image_sha256, m.image_mime, m.meta_sha256, m.arweave_id, JSON.stringify(it.template));
-  }
-  db.run("COMMIT");
-
-  // 7. Feed row so the site's launchpad list sees it (best effort).
+  // Feed row so the site's launchpad list sees it (best effort).
   if (!a["skip-feed"]) {
     try {
-      const row = JSON.stringify({ kind: "collection", body: JSON.stringify({ slug: a.slug, collection: collectionPk.toBase58(), registry: registry.toBase58(), meta: metaSig, manifest: manifestSig }), who: creator.publicKey.toBase58() });
+      const row = JSON.stringify({ kind: "collection", body: JSON.stringify({ slug: spec.slug, collection: collection.publicKey.toBase58(), registry: registry.toBase58(), meta: metaSig, manifest: manifestSig }), who: creator.publicKey.toBase58() });
       const feedSig = await writer.writeRow(connection, creator, dbRootSeed, feedSeed, row, false, [userInventoryPda(creator.publicKey)]);
       console.log(`  feed row -> ${feedSig}`);
     } catch (e) {
       console.warn(`  feed row skipped: ${e instanceof Error ? e.message : e}`);
     }
   }
-  console.log(`\ndeployed ${a.slug}: collection ${collectionPk.toBase58()}`);
+  console.log(`\ndeployed ${spec.slug}: collection ${collection.publicKey.toBase58()}`);
 }
 
 main().catch((e) => {
