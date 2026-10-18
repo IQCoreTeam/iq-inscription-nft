@@ -1,6 +1,7 @@
 // Collections and their items, as stored at deploy time. The permutation is
 // derived from the secret seed once per process and cached.
 
+import { config } from "./config.ts";
 import { db, type CollectionRow, type ItemRow } from "./db.ts";
 import { derivePermutation } from "./shuffle.ts";
 import type { OnChainSlot } from "./program.ts";
@@ -73,5 +74,9 @@ export function publicView(c: CollectionRow) {
     maxPerWallet: c.max_per_wallet,
     allowlistOnly: c.allowlist_only === 1,
     minted: mintedIndices(c.slug).length,
+    // Where the client fetches an item's bytes before inscribing (C). The
+    // backend owns the cluster (devnet.irys.xyz vs gateway.irys.xyz), so it
+    // tells the client rather than the client guessing.
+    arweaveGateway: config.arweaveGateway,
   };
 }
