@@ -4,8 +4,8 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { createHash } from "node:crypto";
-import { PublicKey } from "@solana/web3.js";
+import { createHash, randomBytes } from "node:crypto";
+import { PublicKey, Connection } from "@solana/web3.js";
 import { config } from "./config.ts";
 import { db, nowSec } from "./db.ts";
 import { getCollection, getItem, listCollections, mintedIndices, publicView } from "./collections.ts";
@@ -14,6 +14,7 @@ import { getReservation, markAwaitingSubmit, markCancelled, markRejected, touchR
 import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
+import { stageCollection, buildDeploy, recordCollection, deployFee, type DeploySpec, type StageItem, type Staged } from "./creator.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { poolStats } from "./rpcpool.ts";
@@ -187,6 +188,95 @@ app.post("/single/mint", async (c) => {
   const result = await verifySingle(wallet, burner, inscriptionSig, metaSig);
   if (!result.pass) return c.json({ error: result.retry ? "verification unavailable, retry" : "verification failed", reason: result.reason }, result.retry ? 503 : 400);
   return c.json(await coSignRegisterSingle(col, { wallet, burner, inscriptionSig, metaSig, name, asset }));
+});
+
+// ── Creator wizard: stage (Arweave + manifest; shuffle seed stays server-side)
+//    -> the creator inscribes the returned bytes -> deploy (one tx incl. the
+//    fee) -> finalize (DB rows after it lands). Staging holds the seed in memory
+//    only, keyed by stagingId; a restart loses in-flight deploys (creator restarts).
+type Staging = { spec: DeploySpec; items: StageItem[]; staged: Staged; creator: string; collection?: string; registry?: string; manifestSig?: string; metaSig?: string };
+const staging = new Map<string, Staging>();
+const nftConn = () => new Connection(config.rpcUrls[0], "confirmed");
+
+app.post("/creator/stage", async (c) => {
+  const b = await c.req.json().catch(() => ({} as any));
+  const slug = typeof b.slug === "string" ? b.slug : "";
+  if (!/^[a-z0-9-]{3,32}$/.test(slug)) return c.json({ error: "slug must be 3..32 of [a-z0-9-]" }, 400);
+  if (getCollection(slug)) return c.json({ error: "slug already exists" }, 409);
+  if (!isPubkey(b.creator)) return c.json({ error: "creator must be a base58 pubkey" }, 400);
+  if (typeof b.name !== "string" || !b.name || Buffer.byteLength(b.name) > 80) return c.json({ error: "name must be 1..80 bytes" }, 400);
+  if (typeof b.symbol !== "string" || !b.symbol) return c.json({ error: "symbol required" }, 400);
+  const price = Number(b.price) || 0, deposit = Number(b.deposit) || 0;
+  if (deposit > price) return c.json({ error: "deposit cannot exceed price" }, 400);
+  const spec: DeploySpec = { slug, name: b.name, symbol: b.symbol, description: typeof b.description === "string" ? b.description : "", price, deposit, royaltyBps: Number(b.royaltyBps) || 0, sequential: !!b.sequential };
+
+  // items: [{ index, name, mime, imageBase64, template }]; the browser compresses first.
+  const raw = Array.isArray(b.items) ? b.items : [];
+  const items: StageItem[] = raw.map((it: any, i: number) => ({
+    index: Number(it.index) || i + 1,
+    name: typeof it.name === "string" && it.name ? it.name : `${b.name} #${i + 1}`,
+    bytes: Buffer.from(typeof it.imageBase64 === "string" ? it.imageBase64 : "", "base64"),
+    mime: typeof it.mime === "string" ? it.mime : "image/png",
+    template: typeof it.template === "object" && it.template ? it.template : {},
+  }));
+  for (const it of items) if (Buffer.byteLength(it.name) > 80) return c.json({ error: `name over 80 bytes at item ${it.index}` }, 400);
+  if (!b.single && items.length === 0) return c.json({ error: "no items (or pass single:true)" }, 400);
+
+  try {
+    const staged = await stageCollection(spec, items);
+    const id = randomBytes(16).toString("hex");
+    // Drop raw bytes now that Arweave has them; keep index/name/template for recordCollection.
+    staging.set(id, { spec, items: items.map((it) => ({ ...it, bytes: Buffer.alloc(0) })), staged, creator: b.creator });
+    return c.json({ stagingId: id, manifestJson: staged.manifestJson, collectionJson: staged.collectionJson, itemCount: staged.itemCount, deployFeeLamports: deployFee(staged.itemCount), arweaveGateway: config.arweaveGateway });
+  } catch (e) {
+    console.error("[creator/stage]", e);
+    return c.json({ error: "stage failed: " + (e instanceof Error ? e.message : String(e)) }, 502);
+  }
+});
+
+app.post("/creator/deploy", async (c) => {
+  const b = await c.req.json().catch(() => ({} as any));
+  const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
+  if (!s) return c.json({ error: "unknown or expired stagingId" }, 404);
+  if (!isPubkey(b.creator) || b.creator !== s.creator) return c.json({ error: "creator mismatch" }, 400);
+  if (!isPubkey(b.collection)) return c.json({ error: "collection must be a base58 pubkey" }, 400);
+  const payer = isPubkey(b.payer) ? b.payer : b.creator; // the wallet itself, or its burner
+  const manifestSig = s.staged.itemCount ? b.manifestSig : "";
+  if (s.staged.itemCount && !isSig(manifestSig)) return c.json({ error: "manifestSig required" }, 400);
+  if (!isSig(b.metaSig)) return c.json({ error: "metaSig required" }, 400);
+  try {
+    const conn = nftConn();
+    const { tx, registry } = await buildDeploy({
+      connection: conn, creatorPubkey: new PublicKey(b.creator), payerPubkey: new PublicKey(payer), collectionPubkey: new PublicKey(b.collection),
+      spec: s.spec, itemCount: s.staged.itemCount, manifestHash: s.staged.manifestHash, manifestSig, shuffleCommit: s.staged.shuffleCommit, metaSig: b.metaSig,
+    });
+    s.collection = b.collection; s.registry = registry.toBase58(); s.manifestSig = manifestSig; s.metaSig = b.metaSig;
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = new PublicKey(payer);
+    return c.json({ transaction: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64"), lastValidBlockHeight, registry: registry.toBase58() });
+  } catch (e) {
+    console.error("[creator/deploy]", e);
+    return c.json({ error: "deploy build failed: " + (e instanceof Error ? e.message : String(e)) }, 502);
+  }
+});
+
+app.post("/creator/finalize", async (c) => {
+  const b = await c.req.json().catch(() => ({} as any));
+  const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
+  if (!s || !s.collection || !s.registry) return c.json({ error: "nothing to finalize for this stagingId" }, 404);
+  if (getCollection(s.spec.slug)) { staging.delete(b.stagingId); return c.json({ ok: true, slug: s.spec.slug, already: true }); }
+  // Record only once the registry actually exists on chain (the deploy tx landed).
+  const info = await nftConn().getAccountInfo(new PublicKey(s.registry)).catch(() => null);
+  if (!info) return c.json({ error: "registry not on chain yet; send the deploy tx, then retry" }, 409);
+  try {
+    recordCollection({ spec: s.spec, collectionPubkey: new PublicKey(s.collection), registry: new PublicKey(s.registry), creatorPubkey: new PublicKey(s.creator), staged: s.staged, items: s.items, manifestSig: s.manifestSig || "", metaSig: s.metaSig || "" });
+    staging.delete(b.stagingId);
+    return c.json({ ok: true, slug: s.spec.slug, collection: s.collection, registry: s.registry });
+  } catch (e) {
+    console.error("[creator/finalize]", e);
+    return c.json({ error: "finalize failed: " + (e instanceof Error ? e.message : String(e)) }, 500);
+  }
 });
 
 // The public auditor: re-read the inscriptions and expose every value so a

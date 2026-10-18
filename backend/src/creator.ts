@@ -80,7 +80,8 @@ export async function stageCollection(spec: DeploySpec, items: StageItem[]): Pro
 // the endpoint returns it for the browser burner + collection keypair to sign.
 export async function buildDeploy(args: {
   connection: Connection;
-  creatorPubkey: PublicKey;
+  creatorPubkey: PublicKey; // admin + treasury + royalty recipient (the creator's wallet)
+  payerPubkey: PublicKey; // pays rent + deploy fee and signs (the wallet itself, or its burner)
   collectionPubkey: PublicKey;
   spec: DeploySpec;
   itemCount: number;
@@ -93,7 +94,7 @@ export async function buildDeploy(args: {
   const umi = createUmi(args.connection.rpcEndpoint, { commitment: "confirmed" });
   const createIxs = createCollection(umi, {
     collection: createNoopSigner(umiPk(args.collectionPubkey.toBase58())),
-    payer: createNoopSigner(umiPk(args.creatorPubkey.toBase58())),
+    payer: createNoopSigner(umiPk(args.payerPubkey.toBase58())),
     updateAuthority: umiPk(collectionAuthOf(registry).toBase58()),
     name: args.spec.name,
     uri: assetUri(args.metaSig),
@@ -116,7 +117,7 @@ export async function buildDeploy(args: {
       args.creatorPubkey,
     )
     .accountsStrict({
-      payer: args.creatorPubkey,
+      payer: args.payerPubkey,
       collection: args.collectionPubkey,
       registry,
       collectionAuth: collectionAuthOf(registry),
@@ -127,7 +128,7 @@ export async function buildDeploy(args: {
   const tx = new Transaction().add(...createIxs, initIx);
   // Deploy fee: creator -> platform treasury, atomic with the deploy (no extra signature).
   const fee = deployFee(args.itemCount);
-  if (fee > 0) tx.add(SystemProgram.transfer({ fromPubkey: args.creatorPubkey, toPubkey: PLATFORM_TREASURY, lamports: fee }));
+  if (fee > 0) tx.add(SystemProgram.transfer({ fromPubkey: args.payerPubkey, toPubkey: PLATFORM_TREASURY, lamports: fee }));
   return { tx, registry };
 }
 

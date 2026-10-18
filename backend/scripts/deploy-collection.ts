@@ -89,7 +89,7 @@ async function main() {
   // Core collection + initialize_registry in one tx; the creator and the fresh
   // collection keypair sign.
   const collection = Keypair.generate();
-  const { tx, registry } = await buildDeploy({ connection, creatorPubkey: creator.publicKey, collectionPubkey: collection.publicKey, spec, itemCount: staged.itemCount, manifestHash: staged.manifestHash, manifestSig, shuffleCommit: staged.shuffleCommit, metaSig });
+  const { tx, registry } = await buildDeploy({ connection, creatorPubkey: creator.publicKey, payerPubkey: creator.publicKey, collectionPubkey: collection.publicKey, spec, itemCount: staged.itemCount, manifestHash: staged.manifestHash, manifestSig, shuffleCommit: staged.shuffleCommit, metaSig });
   await sendAndConfirmTransaction(connection, tx, [creator, collection], { commitment: "confirmed" });
   console.log(`  core collection ${collection.publicKey.toBase58()} + registry ${registry.toBase58()} (one tx)`);
 
