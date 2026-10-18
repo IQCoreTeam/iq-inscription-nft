@@ -10,7 +10,10 @@ export function imageUrl(c: string): string {
 }
 
 export function assetUri(m: string): string {
-  return `${config.gatewayBase}/nft/${m}`;
+  // The gateway's /token-meta/{sig} serves a code-in body verbatim as
+  // application/json (CORS *, immutable), which is exactly what M is. Reuse it
+  // rather than add a second route that does the same thing.
+  return `${config.gatewayBase}/token-meta/${m}`;
 }
 
 export function buildMetadata(collection: CollectionRow, item: ItemRow, c: string): string {

@@ -1,0 +1,76 @@
+name: deploy
+
+# Build the backend image, push it to GHCR, then trigger the server's deploy.sh.
+# Matches the IQLabs server pattern (same host as bible-nft): a docker compose
+# stack, GHCR images, and a per-service SSH forced-command key that runs
+# `deploy.sh iq-inscription-nft` (pull new image, restart the compose service).
+# The image carries no secrets; the registrar key, RPC urls, and seed-bearing
+# SQLite are injected on the server via env + a mounted data volume.
+#
+# Required repo secrets (Settings > Secrets and variables > Actions):
+#   DEPLOY_SSH_KEY   the per-service forced-command private key (server provides it)
+#   DEPLOY_HOST      91.98.141.181
+#   SSH_HOST_KEY     the server's public host key line, to pin known_hosts
+# The deploy user (iqlabs) and port (22) match the server's standard. GHCR push
+# uses the built-in GITHUB_TOKEN (ghcr.io/<owner>/iq-inscription-nft).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "target/idl/iq_inscription_nft.json"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          # Attestations trip GHCR's blob handling ("unknown blob" on push).
+          provenance: false
+          sbom: false
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/iq-inscription-nft:main
+            ghcr.io/${{ github.repository_owner }}/iq-inscription-nft:${{ github.sha }}
+
+      - name: Trigger the server deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_HOST_KEY: ${{ secrets.SSH_HOST_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s %s\n' "$DEPLOY_HOST" "$SSH_HOST_KEY" > ~/.ssh/known_hosts
+          # The key is locked to `deploy.sh iq-inscription-nft` (forced command),
+          # so the command string is ignored; the SSH connection is the trigger.
+          ssh -i ~/.ssh/deploy_key \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes -o ConnectTimeout=10 \
+            iqlabs@"$DEPLOY_HOST" 'trigger deploy iq-inscription-nft'
+          shred -u ~/.ssh/deploy_key 2>/dev/null || rm -f ~/.ssh/deploy_key

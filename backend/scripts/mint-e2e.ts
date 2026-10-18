@@ -108,12 +108,12 @@ async function main() {
   const umi = createUmi(connection.rpcEndpoint, { commitment: "confirmed" });
   const onChain = await fetchAssetV1(umi, umiPk(asset.publicKey.toBase58()));
   assert.equal(onChain.owner.toString(), wallet.publicKey.toBase58(), "owner must be the user wallet");
-  assert.equal(onChain.uri, `${config.gatewayBase}/nft/${M}`);
+  assert.equal(onChain.uri, `${config.gatewayBase}/token-meta/${M}`);
   const attrs = Object.fromEntries(((onChain as any).attributes?.attributeList ?? []).map((x: any) => [x.key, x.value]));
   assert.equal(attrs.inscription, Buffer.from(anchor.utils.bytes.bs58.decode(C)).toString("hex"));
   assert.equal(attrs.metadata, Buffer.from(anchor.utils.bytes.bs58.decode(M)).toString("hex"));
   assert.equal(attrs.index, String(index));
-  ok("asset: owner, uri = gateway/nft/M, Attributes C/M/index");
+  ok("asset: owner, uri = gateway/token-meta/M, Attributes C/M/index");
 
   // 7. Reconcile, verify, idempotency.
   const rec = await reconcile();
