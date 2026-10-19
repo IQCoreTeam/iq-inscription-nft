@@ -103,6 +103,13 @@ CREATE TABLE IF NOT EXISTS slot (
 );
 `);
 
+// Lightweight migrations for columns added after launch (idempotent; the live DB
+// predates them). logo_sig / banner_sig are the inscriptions of the collection
+// logo and banner, surfaced in collection.json and publicView.
+for (const col of ["logo_sig TEXT", "banner_sig TEXT"]) {
+  try { db.exec(`ALTER TABLE collection ADD COLUMN ${col}`); } catch (e) { /* column already exists */ }
+}
+
 export type CollectionRow = {
   slug: string;
   core_collection: string;
@@ -127,6 +134,8 @@ export type CollectionRow = {
   allowlist_only: number;
   cursor: number;
   created_at: number;
+  logo_sig: string | null;
+  banner_sig: string | null;
 };
 
 export type ItemRow = {

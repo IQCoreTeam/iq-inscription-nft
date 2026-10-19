@@ -14,7 +14,7 @@ import { getReservation, markAwaitingSubmit, markCancelled, markRejected, touchR
 import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
-import { stageCollection, buildDeploy, recordCollection, deployFee, type DeploySpec, type StageItem, type Staged } from "./creator.ts";
+import { stageCollection, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type Staged } from "./creator.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { poolStats } from "./rpcpool.ts";
@@ -201,7 +201,7 @@ app.post("/single/mint", async (c) => {
 //    -> the creator inscribes the returned bytes -> deploy (one tx incl. the
 //    fee) -> finalize (DB rows after it lands). Staging holds the seed in memory
 //    only, keyed by stagingId; a restart loses in-flight deploys (creator restarts).
-type Staging = { spec: DeploySpec; items: StageItem[]; staged: Staged; creator: string; collection?: string; registry?: string; manifestSig?: string; metaSig?: string };
+type Staging = { spec: DeploySpec; items: StageItem[]; staged: Staged; creator: string; collection?: string; registry?: string; manifestSig?: string; metaSig?: string; logoSig?: string; bannerSig?: string };
 const staging = new Map<string, Staging>();
 const nftConn = () => new Connection(config.rpcUrls[0], "confirmed");
 
@@ -268,6 +268,23 @@ app.post("/creator/deploy", async (c) => {
   }
 });
 
+// Rebuild collection.json once the creator has inscribed their logo/banner, so
+// its image/banner point at those on-chain inscriptions. The creator inscribes
+// the returned string (-> metaSig) before /creator/deploy. Optional: with no
+// sigs it falls back to the first-item image (same as stage).
+app.post("/creator/collection-json", async (c) => {
+  const b = await c.req.json().catch(() => ({} as any));
+  const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
+  if (!s) return c.json({ error: "unknown or expired stagingId" }, 404);
+  const logoSig = isSig(b.logoSig) ? b.logoSig : undefined;
+  const bannerSig = isSig(b.bannerSig) ? b.bannerSig : undefined;
+  const fallback = s.staged.manifestItems.length ? `${config.arweaveGateway}/${s.staged.manifestItems[0].arweave_id}` : "";
+  const collectionJson = buildCollectionJson(s.spec, logoSig ? imgUrl(logoSig) : fallback, bannerSig ? imgUrl(bannerSig) : "");
+  s.logoSig = logoSig;
+  s.bannerSig = bannerSig;
+  return c.json({ collectionJson });
+});
+
 app.post("/creator/finalize", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
   const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
@@ -277,7 +294,7 @@ app.post("/creator/finalize", async (c) => {
   const info = await nftConn().getAccountInfo(new PublicKey(s.registry)).catch(() => null);
   if (!info) return c.json({ error: "registry not on chain yet; send the deploy tx, then retry" }, 409);
   try {
-    recordCollection({ spec: s.spec, collectionPubkey: new PublicKey(s.collection), registry: new PublicKey(s.registry), creatorPubkey: new PublicKey(s.creator), staged: s.staged, items: s.items, manifestSig: s.manifestSig || "", metaSig: s.metaSig || "" });
+    recordCollection({ spec: s.spec, collectionPubkey: new PublicKey(s.collection), registry: new PublicKey(s.registry), creatorPubkey: new PublicKey(s.creator), staged: s.staged, items: s.items, manifestSig: s.manifestSig || "", metaSig: s.metaSig || "", logoSig: s.logoSig, bannerSig: s.bannerSig });
     staging.delete(b.stagingId);
     return c.json({ ok: true, slug: s.spec.slug, collection: s.collection, registry: s.registry });
   } catch (e) {

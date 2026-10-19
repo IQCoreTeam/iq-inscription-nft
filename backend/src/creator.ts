@@ -63,16 +63,33 @@ export async function stageCollection(spec: DeploySpec, items: StageItem[]): Pro
   const seed = randomBytes(32);
   const shuffleCommit = sha256(seed);
   const manifestJson = JSON.stringify({ std: "iqnft-0.1", slug: spec.slug, name: spec.name, shuffle_commit: shuffleCommit, items: manifestItems });
-  const collectionJson = JSON.stringify({
+  // Default collection image = the first item (used when the creator uploads no
+  // logo, and by the CLI). buildCollectionJson rebuilds it when a logo exists.
+  const fallbackImage = manifestItems.length ? `${config.arweaveGateway}/${manifestItems[0].arweave_id}` : "";
+  const collectionJson = buildCollectionJson(spec, fallbackImage, "");
+  return { seed, shuffleCommit, manifestHash: sha256(manifestJson), manifestJson, collectionJson, manifestItems, itemCount: items.length };
+}
+
+// The collection metadata JSON (the Core collection's uri points here, so
+// marketplaces read the collection logo/banner/description from it). image is
+// the collection logo, banner is the wide header; both are gateway/img/{C} URLs
+// of the creator's inscriptions, or the first-item fallback for image.
+export function buildCollectionJson(spec: DeploySpec, imageUrl: string, bannerUrl: string): string {
+  const j: Record<string, unknown> = {
     name: spec.name,
     symbol: spec.symbol,
     description: spec.description,
-    image: manifestItems.length ? `${config.arweaveGateway}/${manifestItems[0].arweave_id}` : "",
+    image: imageUrl,
     external_url: `${config.siteBase}/c/${spec.slug}`,
     properties: { category: "image" },
-  });
-  return { seed, shuffleCommit, manifestHash: sha256(manifestJson), manifestJson, collectionJson, manifestItems, itemCount: items.length };
+  };
+  if (bannerUrl) j.banner = bannerUrl;
+  return JSON.stringify(j);
 }
+
+// gateway/img/{sig}.png serves a feed-row image inscription; the creator
+// inscribes the logo/banner as such rows, so their collection.json points here.
+export const imgUrl = (sig: string) => `${config.gatewayBase}/img/${sig}.png`;
 
 // The createCollection (authority = our PDA) + initialize_registry instructions
 // in one transaction, so no one can initialize a registry for this collection
@@ -143,17 +160,20 @@ export function recordCollection(args: {
   items: StageItem[];
   manifestSig: string;
   metaSig: string;
+  logoSig?: string | null;
+  bannerSig?: string | null;
 }): void {
   const { spec, staged } = args;
   db.run("BEGIN");
   db.query(
     `INSERT INTO collection (slug, core_collection, registry, name, symbol, description, creator, treasury, max_supply,
-       price_lamports, deposit_lamports, sequential, shuffle_seed, shuffle_commit, manifest_sig, manifest_hash, meta_sig, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)`,
+       price_lamports, deposit_lamports, sequential, shuffle_seed, shuffle_commit, manifest_sig, manifest_hash, meta_sig, logo_sig, banner_sig, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)`,
   ).run(
     spec.slug, args.collectionPubkey.toBase58(), args.registry.toBase58(), spec.name, spec.symbol, spec.description,
     args.creatorPubkey.toBase58(), staged.itemCount, spec.price, spec.deposit, spec.sequential ? 1 : 0,
-    staged.seed.toString("hex"), staged.shuffleCommit, args.manifestSig, staged.manifestHash, args.metaSig, nowSec(),
+    staged.seed.toString("hex"), staged.shuffleCommit, args.manifestSig, staged.manifestHash, args.metaSig,
+    args.logoSig ?? null, args.bannerSig ?? null, nowSec(),
   );
   const ins = db.query("INSERT INTO item (slug, item_index, name, image_sha256, image_mime, meta_sha256, arweave_id, template) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)");
   for (const it of args.items) {

@@ -74,6 +74,9 @@ export function publicView(c: CollectionRow) {
     maxPerWallet: c.max_per_wallet,
     allowlistOnly: c.allowlist_only === 1,
     minted: mintedIndices(c.slug).length,
+    // Collection logo + banner (inscribed by the creator), as gateway image URLs.
+    logo: c.logo_sig ? `${config.gatewayBase}/img/${c.logo_sig}.png` : null,
+    banner: c.banner_sig ? `${config.gatewayBase}/img/${c.banner_sig}.png` : null,
     // Where the client fetches an item's bytes before inscribing (C). The
     // backend owns the cluster (devnet.irys.xyz vs gateway.irys.xyz), so it
     // tells the client rather than the client guessing.
