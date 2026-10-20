@@ -71,19 +71,28 @@ export async function stageCollection(spec: DeploySpec, items: StageItem[]): Pro
 }
 
 // The collection metadata JSON (the Core collection's uri points here, so
-// marketplaces read the collection logo/banner/description from it). image is
-// the collection logo, banner is the wide header; both are gateway/img/{C} URLs
-// of the creator's inscriptions, or the first-item fallback for image.
+// marketplaces read the collection logo/banner/description from it). Field names
+// follow the widely-read collection-metadata standard (OpenSea / ERC-7572
+// contract-level metadata): `image` = logo/pfp, `banner_image` = the wide header,
+// `external_link` = the site. We also keep Metaplex's `external_url` and a plain
+// `banner` alias so any reader (ME/Tensor/OpenSea/explorers) finds them. Both
+// image URLs are gateway/img/{C} of the creator's inscriptions (image falls back
+// to the first item when no logo is uploaded).
 export function buildCollectionJson(spec: DeploySpec, imageUrl: string, bannerUrl: string): string {
+  const link = `${config.siteBase}/c/${spec.slug}`;
   const j: Record<string, unknown> = {
     name: spec.name,
     symbol: spec.symbol,
     description: spec.description,
     image: imageUrl,
-    external_url: `${config.siteBase}/c/${spec.slug}`,
+    external_url: link,
+    external_link: link,
     properties: { category: "image" },
   };
-  if (bannerUrl) j.banner = bannerUrl;
+  if (bannerUrl) {
+    j.banner_image = bannerUrl; // OpenSea / ERC-7572 standard key
+    j.banner = bannerUrl; // alias for readers that look for `banner`
+  }
   return JSON.stringify(j);
 }
 
