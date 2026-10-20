@@ -32,11 +32,16 @@ export function mintedIndices(slug: string): number[] {
   return mintedOf.all(slug).map((r) => r.item_index);
 }
 
+// registered_at = when this backend first saw the mint. The bitmap design keeps
+// no per-item time on chain, so "first seen" is the only honest timestamp: the
+// feed's WHEN column and the collection bump both come from it. A later upsert
+// (reconciler re-scan) never overwrites a time already recorded.
 const upsertSlotStmt = db.query(
   `INSERT INTO slot (slug, item_index, asset, owner, inscription_sig, meta_sig, registered_at)
    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
    ON CONFLICT(slug, item_index) DO UPDATE SET
-     asset = ?3, owner = ?4, inscription_sig = ?5, meta_sig = ?6, registered_at = ?7`
+     asset = ?3, owner = ?4, inscription_sig = ?5, meta_sig = ?6,
+     registered_at = CASE WHEN slot.registered_at > 0 THEN slot.registered_at ELSE ?7 END`
 );
 // Mirror one on-chain slot into the DB (reconciler, and the allocator when it
 // discovers a minted index the DB did not know about).
@@ -44,8 +49,9 @@ export function upsertSlot(slug: string, s: OnChainSlot): void {
   // A newly seen mint bumps the collection to the top of the feed (cheap: one
   // existence check + one timestamp update, only on genuinely new mints).
   const isNew = !slotExistsStmt.get(slug, s.index);
-  upsertSlotStmt.run(slug, s.index, s.asset, s.owner, s.inscriptionSig, s.metaSig, s.registeredAt);
-  if (isNew) bumpMintStmt.run(slug, nowSec());
+  const seenAt = nowSec();
+  upsertSlotStmt.run(slug, s.index, s.asset, s.owner, s.inscriptionSig, s.metaSig, s.registeredAt || seenAt);
+  if (isNew) bumpMintStmt.run(slug, seenAt);
 }
 
 export function ownersOf(slug: string): number {
