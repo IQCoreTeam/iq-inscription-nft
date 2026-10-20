@@ -2,12 +2,16 @@
 // derived from the secret seed once per process and cached.
 
 import { config } from "./config.ts";
-import { db, type CollectionRow, type ItemRow } from "./db.ts";
+import { db, nowSec, type CollectionRow, type ItemRow } from "./db.ts";
 import { derivePermutation } from "./shuffle.ts";
 import type { OnChainSlot } from "./program.ts";
 
 const bySlug = db.query<CollectionRow, [string]>("SELECT * FROM collection WHERE slug = ?");
-const all = db.query<CollectionRow, []>("SELECT * FROM collection ORDER BY created_at DESC");
+// Bump order (pump.fun style): most recently minted first, new collections next.
+const all = db.query<CollectionRow, []>("SELECT * FROM collection ORDER BY last_mint_at DESC, created_at DESC");
+const slotExistsStmt = db.query<{ one: number }, [string, number]>("SELECT 1 AS one FROM slot WHERE slug = ? AND item_index = ?");
+const bumpMintStmt = db.query("UPDATE collection SET last_mint_at = ?2 WHERE slug = ?1");
+const ownersStmt = db.query<{ n: number }, [string]>("SELECT COUNT(DISTINCT owner) AS n FROM slot WHERE slug = ?");
 const itemOf = db.query<ItemRow, [string, number]>("SELECT * FROM item WHERE slug = ? AND item_index = ?");
 const mintedOf = db.query<{ item_index: number }, [string]>("SELECT item_index FROM slot WHERE slug = ? ORDER BY item_index");
 const firstItemOf = db.query<{ arweave_id: string }, [string]>("SELECT arweave_id FROM item WHERE slug = ? ORDER BY item_index LIMIT 1");
@@ -37,7 +41,15 @@ const upsertSlotStmt = db.query(
 // Mirror one on-chain slot into the DB (reconciler, and the allocator when it
 // discovers a minted index the DB did not know about).
 export function upsertSlot(slug: string, s: OnChainSlot): void {
+  // A newly seen mint bumps the collection to the top of the feed (cheap: one
+  // existence check + one timestamp update, only on genuinely new mints).
+  const isNew = !slotExistsStmt.get(slug, s.index);
   upsertSlotStmt.run(slug, s.index, s.asset, s.owner, s.inscriptionSig, s.metaSig, s.registeredAt);
+  if (isNew) bumpMintStmt.run(slug, nowSec());
+}
+
+export function ownersOf(slug: string): number {
+  return ownersStmt.get(slug)?.n ?? 0;
 }
 
 const permutations = new Map<string, number[]>();
@@ -75,6 +87,9 @@ export function publicView(c: CollectionRow) {
     maxPerWallet: c.max_per_wallet,
     allowlistOnly: c.allowlist_only === 1,
     minted: mintedIndices(c.slug).length,
+    owners: ownersOf(c.slug), // distinct owners (from the slot mirror; cheap)
+    // volume + floor live on secondary marketplaces (ME/Tensor), which we do not
+    // index, so the client shows them as "-". everything else is from our data.
     // Collection logo + banner (inscribed by the creator), as gateway image URLs.
     logo: c.logo_sig ? `${config.gatewayBase}/img/${c.logo_sig}.png` : null,
     banner: c.banner_sig ? `${config.gatewayBase}/img/${c.banner_sig}.png` : null,

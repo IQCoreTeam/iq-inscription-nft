@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS slot (
 // Lightweight migrations for columns added after launch (idempotent; the live DB
 // predates them). logo_sig / banner_sig are the inscriptions of the collection
 // logo and banner, surfaced in collection.json and publicView.
-for (const col of ["logo_sig TEXT", "banner_sig TEXT"]) {
+for (const col of ["logo_sig TEXT", "banner_sig TEXT", "last_mint_at INTEGER NOT NULL DEFAULT 0"]) {
   try { db.exec(`ALTER TABLE collection ADD COLUMN ${col}`); } catch (e) { /* column already exists */ }
 }
 
@@ -136,6 +136,7 @@ export type CollectionRow = {
   created_at: number;
   logo_sig: string | null;
   banner_sig: string | null;
+  last_mint_at: number;
 };
 
 export type ItemRow = {
