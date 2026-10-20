@@ -94,6 +94,8 @@ export function publicView(c: CollectionRow) {
     allowlistOnly: c.allowlist_only === 1,
     minted: mintedIndices(c.slug).length,
     owners: ownersOf(c.slug), // distinct owners (from the slot mirror; cheap)
+    lastMintAt: c.last_mint_at, // first-seen time of the newest mint (bump order + the HOT chip)
+    chain: "solana",
     // volume + floor live on secondary marketplaces (ME/Tensor), which we do not
     // index, so the client shows them as "-". everything else is from our data.
     // Collection logo + banner (inscribed by the creator), as gateway image URLs.
