@@ -351,12 +351,16 @@ app.get("/c/:slug/recent", (c) => {
   const col = getCollection(c.req.param("slug"));
   if (!col) return c.json({ error: "not found" }, 404);
   const limit = Math.min(Number(c.req.query("limit") ?? 20) || 20, 100);
+  // arweave_id rides along so the feed can show the item's thumbnail without a
+  // second round trip (the image itself is the creator's Arweave copy).
   const rows = db
-    .query<{ item_index: number; asset: string; owner: string; registered_at: number }, [string, number]>(
-      "SELECT item_index, asset, owner, registered_at FROM slot WHERE slug = ? ORDER BY registered_at DESC, item_index DESC LIMIT ?"
+    .query<{ item_index: number; asset: string; owner: string; registered_at: number; arweave_id: string | null }, [string, number]>(
+      `SELECT s.item_index, s.asset, s.owner, s.registered_at, i.arweave_id
+         FROM slot s LEFT JOIN item i ON i.slug = s.slug AND i.item_index = s.item_index
+        WHERE s.slug = ? ORDER BY s.registered_at DESC, s.item_index DESC LIMIT ?`
     )
     .all(col.slug, limit);
-  return c.json({ recent: rows.map((r) => ({ index: r.item_index, asset: r.asset, owner: r.owner, registeredAt: r.registered_at })) });
+  return c.json({ recent: rows.map((r) => ({ index: r.item_index, asset: r.asset, owner: r.owner, registeredAt: r.registered_at, arweaveId: r.arweave_id })) });
 });
 
 app.get("/stats", (c) => {
