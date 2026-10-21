@@ -81,15 +81,16 @@ app.get("/c/:slug/items", (c) => {
     )
     .all(col.slug, limit, offset);
   const minted = new Set(mintedIndices(col.slug));
-  // Asset address per minted index, so the client can link a minted cell to the
-  // on-chain NFT viewer. Only minted items have a slot row.
-  const assetByIndex = new Map<number, string>();
+  // Asset address + inscribed image per minted index, so the client can link a
+  // minted cell to the on-chain viewer and show the on-chain image. Only minted
+  // items have a slot row; unminted art stays sealed (no image url).
+  const slotByIndex = new Map<number, { asset: string; image: string }>();
   for (const s of db
-    .query<{ item_index: number; asset: string }, [string]>("SELECT item_index, asset FROM slot WHERE slug = ?")
+    .query<{ item_index: number; asset: string; inscription_sig: string }, [string]>("SELECT item_index, asset, inscription_sig FROM slot WHERE slug = ?")
     .all(col.slug))
-    assetByIndex.set(s.item_index, s.asset);
+    slotByIndex.set(s.item_index, { asset: s.asset, image: `${config.gatewayBase}/img/${s.inscription_sig}.png` });
   return c.json({
-    items: rows.map((r) => ({ index: r.item_index, name: r.name, arweaveId: r.arweave_id, mime: r.image_mime, minted: minted.has(r.item_index), asset: assetByIndex.get(r.item_index) ?? null })),
+    items: rows.map((r) => { const s = slotByIndex.get(r.item_index); return { index: r.item_index, name: r.name, arweaveId: r.arweave_id, mime: r.image_mime, minted: minted.has(r.item_index), asset: s?.asset ?? null, image: s?.image ?? null }; }),
     total: col.max_supply,
   });
 });
@@ -351,16 +352,14 @@ app.get("/c/:slug/recent", (c) => {
   const col = getCollection(c.req.param("slug"));
   if (!col) return c.json({ error: "not found" }, 404);
   const limit = Math.min(Number(c.req.query("limit") ?? 20) || 20, 100);
-  // arweave_id rides along so the feed can show the item's thumbnail without a
-  // second round trip (the image itself is the creator's Arweave copy).
+  // image = the gateway render of the item's inscription (on chain), so the feed
+  // shows thumbnails without a second round trip.
   const rows = db
-    .query<{ item_index: number; asset: string; owner: string; registered_at: number; arweave_id: string | null }, [string, number]>(
-      `SELECT s.item_index, s.asset, s.owner, s.registered_at, i.arweave_id
-         FROM slot s LEFT JOIN item i ON i.slug = s.slug AND i.item_index = s.item_index
-        WHERE s.slug = ? ORDER BY s.registered_at DESC, s.item_index DESC LIMIT ?`
+    .query<{ item_index: number; asset: string; owner: string; registered_at: number; inscription_sig: string }, [string, number]>(
+      "SELECT item_index, asset, owner, registered_at, inscription_sig FROM slot WHERE slug = ? ORDER BY registered_at DESC, item_index DESC LIMIT ?"
     )
     .all(col.slug, limit);
-  return c.json({ recent: rows.map((r) => ({ index: r.item_index, asset: r.asset, owner: r.owner, registeredAt: r.registered_at, arweaveId: r.arweave_id })) });
+  return c.json({ recent: rows.map((r) => ({ index: r.item_index, asset: r.asset, owner: r.owner, registeredAt: r.registered_at, image: `${config.gatewayBase}/img/${r.inscription_sig}.png` })) });
 });
 
 app.get("/stats", (c) => {

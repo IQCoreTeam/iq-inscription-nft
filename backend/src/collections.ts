@@ -14,7 +14,7 @@ const bumpMintStmt = db.query("UPDATE collection SET last_mint_at = ?2 WHERE slu
 const ownersStmt = db.query<{ n: number }, [string]>("SELECT COUNT(DISTINCT owner) AS n FROM slot WHERE slug = ?");
 const itemOf = db.query<ItemRow, [string, number]>("SELECT * FROM item WHERE slug = ? AND item_index = ?");
 const mintedOf = db.query<{ item_index: number }, [string]>("SELECT item_index FROM slot WHERE slug = ? ORDER BY item_index");
-const firstItemOf = db.query<{ arweave_id: string }, [string]>("SELECT arweave_id FROM item WHERE slug = ? ORDER BY item_index LIMIT 1");
+const latestMintOf = db.query<{ inscription_sig: string }, [string]>("SELECT inscription_sig FROM slot WHERE slug = ? ORDER BY registered_at DESC, item_index DESC LIMIT 1");
 
 export function getCollection(slug: string): CollectionRow | null {
   return bySlug.get(slug) ?? null;
@@ -101,9 +101,10 @@ export function publicView(c: CollectionRow) {
     // Collection logo + banner (inscribed by the creator), as gateway image URLs.
     logo: c.logo_sig ? `${config.gatewayBase}/img/${c.logo_sig}.png` : null,
     banner: c.banner_sig ? `${config.gatewayBase}/img/${c.banner_sig}.png` : null,
-    // A representative cover = the first item's image on Arweave (always serves,
-    // independent of the gateway); the card falls back to this when no logo.
-    cover: (() => { const it = firstItemOf.get(c.slug); return it ? `${config.arweaveGateway}/${it.arweave_id}` : null; })(),
+    // A representative cover = the newest minted item's inscribed image (on
+    // chain, served by the gateway). Unminted art is never shown: the card falls
+    // back to a sealed tile when nothing is minted and no banner/logo is set.
+    cover: (() => { const m = latestMintOf.get(c.slug); return m ? `${config.gatewayBase}/img/${m.inscription_sig}.png` : null; })(),
     // Where the client fetches an item's bytes before inscribing (C). The
     // backend owns the cluster (devnet.irys.xyz vs gateway.irys.xyz), so it
     // tells the client rather than the client guessing.
