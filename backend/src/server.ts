@@ -7,6 +7,7 @@ import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
 import { PublicKey, Connection } from "@solana/web3.js";
 import { config } from "./config.ts";
+import { rarityOf } from "./rarity.ts";
 import { db, nowSec } from "./db.ts";
 import { getCollection, getItem, listCollections, mintedIndices, publicView } from "./collections.ts";
 import { reserve, ReserveError } from "./allocator.ts";
@@ -84,13 +85,21 @@ app.get("/c/:slug/items", (c) => {
   // Asset address + inscribed image per minted index, so the client can link a
   // minted cell to the on-chain viewer and show the on-chain image. Only minted
   // items have a slot row; unminted art stays sealed (no image url).
-  const slotByIndex = new Map<number, { asset: string; image: string }>();
+  const slotByIndex = new Map<number, { asset: string; owner: string; image: string }>();
   for (const s of db
-    .query<{ item_index: number; asset: string; inscription_sig: string }, [string]>("SELECT item_index, asset, inscription_sig FROM slot WHERE slug = ?")
+    .query<{ item_index: number; asset: string; owner: string; inscription_sig: string }, [string]>("SELECT item_index, asset, owner, inscription_sig FROM slot WHERE slug = ?")
     .all(col.slug))
-    slotByIndex.set(s.item_index, { asset: s.asset, image: `${config.gatewayBase}/img/${s.inscription_sig}.png` });
+    slotByIndex.set(s.item_index, { asset: s.asset, owner: s.owner, image: `${config.gatewayBase}/img/${s.inscription_sig}.png` });
+  // Trait rarity (rank + tier) only for minted items: a sealed item's tier
+  // would tell sequential-mint buyers what is coming next.
+  const rarity = rarityOf(col.slug);
   return c.json({
-    items: rows.map((r) => { const s = slotByIndex.get(r.item_index); return { index: r.item_index, name: r.name, arweaveId: r.arweave_id, mime: r.image_mime, minted: minted.has(r.item_index), asset: s?.asset ?? null, image: s?.image ?? null }; }),
+    hasRarity: rarity !== null,
+    items: rows.map((r) => {
+      const s = slotByIndex.get(r.item_index), isMinted = minted.has(r.item_index);
+      const rr = isMinted && rarity ? rarity.get(r.item_index) : null;
+      return { index: r.item_index, name: r.name, arweaveId: r.arweave_id, mime: r.image_mime, minted: isMinted, asset: s?.asset ?? null, owner: s?.owner ?? null, image: s?.image ?? null, rarity: rr ? { rank: rr.rank, tier: rr.tier } : null };
+    }),
     total: col.max_supply,
   });
 });
@@ -346,6 +355,17 @@ app.get("/c/:slug/verify/:index", async (c) => {
   } catch (e) {
     return c.json({ error: `could not read inscriptions: ${e}` }, 502);
   }
+});
+
+app.get("/c/:slug/item/:index", (c) => {
+  const col = getCollection(c.req.param("slug"));
+  if (!col) return c.json({ error: "not found" }, 404);
+  const index = Number(c.req.param("index"));
+  const item = db.query<{ name: string }, [string, number]>("SELECT name FROM item WHERE slug = ? AND item_index = ?").get(col.slug, index);
+  if (!item) return c.json({ error: "no such item" }, 404);
+  const s = db.query<{ asset: string; owner: string; inscription_sig: string }, [string, number]>("SELECT asset, owner, inscription_sig FROM slot WHERE slug = ? AND item_index = ?").get(col.slug, index);
+  const rr = s ? rarityOf(col.slug)?.get(index) : null;
+  return c.json({ index, name: item.name, minted: !!s, asset: s?.asset ?? null, owner: s?.owner ?? null, image: s ? `${config.gatewayBase}/img/${s.inscription_sig}.png` : null, rarity: rr ? { rank: rr.rank, tier: rr.tier, score: rr.score, total: col.max_supply } : null });
 });
 
 app.get("/c/:slug/recent", (c) => {
