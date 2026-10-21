@@ -371,6 +371,26 @@ app.get("/c/:slug/item/:index", (c) => {
   return c.json({ index, name: item.name, minted: !!s, asset: s?.asset ?? null, owner: s?.owner ?? null, inscriptionSig: s?.inscription_sig ?? null, rarity: rr ? { rank: rr.rank, tier: rr.tier, score: rr.score, total: col.max_supply } : null });
 });
 
+// Asset lookup for the viewer: everything the registry mirror knows about a
+// minted item, keyed by its Core asset address. Lets the viewer open with zero
+// rpc calls; DECODE FROM CHAIN re-reads the account and both inscriptions.
+app.get("/asset/:address", (c) => {
+  const s = db
+    .query<{ slug: string; item_index: number; owner: string; inscription_sig: string; meta_sig: string }, [string]>(
+      "SELECT slug, item_index, owner, inscription_sig, meta_sig FROM slot WHERE asset = ?"
+    )
+    .get(c.req.param("address"));
+  if (!s) return c.json({ error: "not a minted item in this registry" }, 404);
+  const col = getCollection(s.slug);
+  const item = db.query<{ name: string }, [string, number]>("SELECT name FROM item WHERE slug = ? AND item_index = ?").get(s.slug, s.item_index);
+  const rr = rarityOf(s.slug)?.get(s.item_index);
+  return c.json({
+    asset: c.req.param("address"), slug: s.slug, collection: col?.core_collection ?? null, collectionName: col?.name ?? null,
+    index: s.item_index, name: item?.name ?? null, owner: s.owner, inscriptionSig: s.inscription_sig, metaSig: s.meta_sig,
+    rarity: rr ? { rank: rr.rank, tier: rr.tier, score: rr.score, total: col?.max_supply ?? 0 } : null,
+  });
+});
+
 app.get("/c/:slug/recent", (c) => {
   const col = getCollection(c.req.param("slug"));
   if (!col) return c.json({ error: "not found" }, 404);
