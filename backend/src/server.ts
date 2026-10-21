@@ -85,11 +85,14 @@ app.get("/c/:slug/items", (c) => {
   // Asset address + inscribed image per minted index, so the client can link a
   // minted cell to the on-chain viewer and show the on-chain image. Only minted
   // items have a slot row; unminted art stays sealed (no image url).
-  const slotByIndex = new Map<number, { asset: string; owner: string; image: string }>();
+  // The client renders a minted image from its inscription (gateway /img/{C})
+  // with the gateway host it already knows for the cluster, so only the
+  // signature is sent here.
+  const slotByIndex = new Map<number, { asset: string; owner: string; inscriptionSig: string }>();
   for (const s of db
     .query<{ item_index: number; asset: string; owner: string; inscription_sig: string }, [string]>("SELECT item_index, asset, owner, inscription_sig FROM slot WHERE slug = ?")
     .all(col.slug))
-    slotByIndex.set(s.item_index, { asset: s.asset, owner: s.owner, image: `${config.gatewayBase}/img/${s.inscription_sig}.png` });
+    slotByIndex.set(s.item_index, { asset: s.asset, owner: s.owner, inscriptionSig: s.inscription_sig });
   // Trait rarity (rank + tier) only for minted items: a sealed item's tier
   // would tell sequential-mint buyers what is coming next.
   const rarity = rarityOf(col.slug);
@@ -98,7 +101,7 @@ app.get("/c/:slug/items", (c) => {
     items: rows.map((r) => {
       const s = slotByIndex.get(r.item_index), isMinted = minted.has(r.item_index);
       const rr = isMinted && rarity ? rarity.get(r.item_index) : null;
-      return { index: r.item_index, name: r.name, arweaveId: r.arweave_id, mime: r.image_mime, minted: isMinted, asset: s?.asset ?? null, owner: s?.owner ?? null, image: s?.image ?? null, rarity: rr ? { rank: rr.rank, tier: rr.tier } : null };
+      return { index: r.item_index, name: r.name, arweaveId: r.arweave_id, mime: r.image_mime, minted: isMinted, asset: s?.asset ?? null, owner: s?.owner ?? null, inscriptionSig: s?.inscriptionSig ?? null, rarity: rr ? { rank: rr.rank, tier: rr.tier } : null };
     }),
     total: col.max_supply,
   });
@@ -365,21 +368,21 @@ app.get("/c/:slug/item/:index", (c) => {
   if (!item) return c.json({ error: "no such item" }, 404);
   const s = db.query<{ asset: string; owner: string; inscription_sig: string }, [string, number]>("SELECT asset, owner, inscription_sig FROM slot WHERE slug = ? AND item_index = ?").get(col.slug, index);
   const rr = s ? rarityOf(col.slug)?.get(index) : null;
-  return c.json({ index, name: item.name, minted: !!s, asset: s?.asset ?? null, owner: s?.owner ?? null, image: s ? `${config.gatewayBase}/img/${s.inscription_sig}.png` : null, rarity: rr ? { rank: rr.rank, tier: rr.tier, score: rr.score, total: col.max_supply } : null });
+  return c.json({ index, name: item.name, minted: !!s, asset: s?.asset ?? null, owner: s?.owner ?? null, inscriptionSig: s?.inscription_sig ?? null, rarity: rr ? { rank: rr.rank, tier: rr.tier, score: rr.score, total: col.max_supply } : null });
 });
 
 app.get("/c/:slug/recent", (c) => {
   const col = getCollection(c.req.param("slug"));
   if (!col) return c.json({ error: "not found" }, 404);
   const limit = Math.min(Number(c.req.query("limit") ?? 20) || 20, 100);
-  // image = the gateway render of the item's inscription (on chain), so the feed
-  // shows thumbnails without a second round trip.
+  // inscriptionSig lets the feed render the item's on-chain image (gateway
+  // /img/{C}) without a second round trip.
   const rows = db
     .query<{ item_index: number; asset: string; owner: string; registered_at: number; inscription_sig: string }, [string, number]>(
       "SELECT item_index, asset, owner, registered_at, inscription_sig FROM slot WHERE slug = ? ORDER BY registered_at DESC, item_index DESC LIMIT ?"
     )
     .all(col.slug, limit);
-  return c.json({ recent: rows.map((r) => ({ index: r.item_index, asset: r.asset, owner: r.owner, registeredAt: r.registered_at, image: `${config.gatewayBase}/img/${r.inscription_sig}.png` })) });
+  return c.json({ recent: rows.map((r) => ({ index: r.item_index, asset: r.asset, owner: r.owner, registeredAt: r.registered_at, inscriptionSig: r.inscription_sig })) });
 });
 
 app.get("/stats", (c) => {

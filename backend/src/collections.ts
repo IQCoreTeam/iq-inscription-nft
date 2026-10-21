@@ -101,10 +101,10 @@ export function publicView(c: CollectionRow) {
     // Collection logo + banner (inscribed by the creator), as gateway image URLs.
     logo: c.logo_sig ? `${config.gatewayBase}/img/${c.logo_sig}.png` : null,
     banner: c.banner_sig ? `${config.gatewayBase}/img/${c.banner_sig}.png` : null,
-    // A representative cover = the newest minted item's inscribed image (on
-    // chain, served by the gateway). Unminted art is never shown: the card falls
-    // back to a sealed tile when nothing is minted and no banner/logo is set.
-    cover: (() => { const m = latestMintOf.get(c.slug); return m ? `${config.gatewayBase}/img/${m.inscription_sig}.png` : null; })(),
+    // A representative cover = the newest minted item's inscription (the client
+    // renders it through the gateway). Unminted art is never shown: the card
+    // falls back to a sealed tile when nothing is minted and no banner/logo is set.
+    coverSig: latestMintOf.get(c.slug)?.inscription_sig ?? null,
     // Where the client fetches an item's bytes before inscribing (C). The
     // backend owns the cluster (devnet.irys.xyz vs gateway.irys.xyz), so it
     // tells the client rather than the client guessing.
