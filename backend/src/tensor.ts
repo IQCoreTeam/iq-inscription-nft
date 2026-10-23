@@ -19,15 +19,13 @@ async function tj(path: string): Promise<any | null> {
   }
 }
 
-// Our Core collection mint -> Tensor collId. `voc` (verified on-chain collection)
-// is the Core collection address; fall back to the by-mint lookup.
-async function resolveCollId(coreCollection: string): Promise<string | null> {
-  const a = await tj(`/collections/find_collection?${new URLSearchParams({ voc: coreCollection })}`);
-  const id = a?.collId ?? a?.collection?.collId ?? a?.slug ?? a?.collection?.slug;
-  if (id) return String(id);
-  const b = await tj(`/mint/collection?${new URLSearchParams({ mints: coreCollection })}`);
-  const fromMint = Array.isArray(b) ? b[0]?.collId ?? b[0]?.slug : b?.collections?.[0]?.collId ?? b?.[coreCollection]?.collId;
-  return fromMint ? String(fromMint) : null;
+// A minted NFT mint -> its Tensor collId. `collections/mints` returns, per mint,
+// the collection `{ id, name, verifiedCollection }`; `id` is the collId that
+// tx_history takes. Verified against live mainnet data.
+async function resolveCollId(itemMint: string): Promise<string | null> {
+  const a = await tj(`/collections/mints?${new URLSearchParams({ mints: itemMint })}`);
+  const id = Array.isArray(a) ? a[0]?.id : null;
+  return id ? String(id) : null;
 }
 
 type ParsedSale = { txId: string; mint: string; price: number; buyer: string | null; seller: string | null; source: string | null; blockTime: number };
@@ -64,7 +62,10 @@ async function syncCollection(c: CollectionRow): Promise<void> {
   if (c.max_supply <= 0) return; // single registries have no item slots to match
   let collId = c.tensor_coll_id;
   if (!collId) {
-    collId = await resolveCollId(c.core_collection);
+    // resolve the collId from one of our minted NFTs; nothing minted = nothing yet
+    const sample = db.query<{ asset: string }, [string]>("SELECT asset FROM slot WHERE slug = ? LIMIT 1").get(c.slug);
+    if (!sample) return;
+    collId = await resolveCollId(sample.asset);
     if (!collId) return; // Tensor does not index this collection yet
     setCollId.run(collId, c.slug);
   }
