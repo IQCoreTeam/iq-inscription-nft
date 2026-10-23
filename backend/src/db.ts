@@ -101,12 +101,27 @@ CREATE TABLE IF NOT EXISTS slot (
   registered_at   INTEGER NOT NULL,
   PRIMARY KEY (slug, item_index)
 );
+
+-- Secondary-market sales, pulled from Tensor (mainnet only). One row per on-chain
+-- sale tx; matched to our items by the NFT mint (= slot.asset).
+CREATE TABLE IF NOT EXISTS sale (
+  tx_id       TEXT PRIMARY KEY,   -- tensor txId, dedupe key
+  slug        TEXT NOT NULL,
+  item_index  INTEGER,            -- our item index if the mint matched a slot
+  asset       TEXT NOT NULL,      -- the NFT mint (tensor mintOnchainId)
+  price       INTEGER NOT NULL,   -- gross amount, lamports
+  buyer       TEXT,
+  seller      TEXT,
+  source      TEXT,               -- marketplace (TCOMP, MEV2, HADE, ...)
+  block_time  INTEGER NOT NULL    -- unix seconds
+);
+CREATE INDEX IF NOT EXISTS sale_slug_idx ON sale(slug, block_time DESC);
 `);
 
 // Lightweight migrations for columns added after launch (idempotent; the live DB
 // predates them). logo_sig / banner_sig are the inscriptions of the collection
 // logo and banner, surfaced in collection.json and publicView.
-for (const col of ["logo_sig TEXT", "banner_sig TEXT", "last_mint_at INTEGER NOT NULL DEFAULT 0"]) {
+for (const col of ["logo_sig TEXT", "banner_sig TEXT", "last_mint_at INTEGER NOT NULL DEFAULT 0", "tensor_coll_id TEXT"]) {
   try { db.exec(`ALTER TABLE collection ADD COLUMN ${col}`); } catch (e) { /* column already exists */ }
 }
 
@@ -137,6 +152,7 @@ export type CollectionRow = {
   logo_sig: string | null;
   banner_sig: string | null;
   last_mint_at: number;
+  tensor_coll_id: string | null;
 };
 
 export type ItemRow = {

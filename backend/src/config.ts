@@ -88,4 +88,10 @@ export const config = {
   // margin, so the platform is not out of pocket at scale. Placeholder amounts.
   deployFeeBase: Number(env("DEPLOY_FEE_BASE", "10000000")), // 0.01 SOL
   deployFeePerItem: Number(env("DEPLOY_FEE_PER_ITEM", "300000")), // 0.0003 SOL/item
+
+  // Tensor secondary-market sales (read-only). The key is mainnet-scoped: the
+  // devnet host rejects it, so the poller only runs on mainnet. Empty = off.
+  tensorApiKey: env("TENSOR_API_KEY", ""),
+  tensorBase: `https://api.${env("CLUSTER", "devnet")}.tensordev.io/api/v1`,
+  tensorPollMs: Number(env("TENSOR_POLL_MS", "90000")),
 };

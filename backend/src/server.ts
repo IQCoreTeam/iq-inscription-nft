@@ -18,6 +18,7 @@ import { buildMetadata } from "./metadata.ts";
 import { stageCollection, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type Staged } from "./creator.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
+import { startTensorPoller, recentSales } from "./tensor.ts";
 import { poolStats } from "./rpcpool.ts";
 
 export const app = new Hono();
@@ -402,7 +403,12 @@ app.get("/c/:slug/recent", (c) => {
       "SELECT item_index, asset, owner, registered_at, inscription_sig FROM slot WHERE slug = ? ORDER BY registered_at DESC, item_index DESC LIMIT ?"
     )
     .all(col.slug, limit);
-  return c.json({ recent: rows.map((r) => ({ index: r.item_index, asset: r.asset, owner: r.owner, registeredAt: r.registered_at, inscriptionSig: r.inscription_sig })) });
+  const mints = rows.map((r) => ({ kind: "mint", index: r.item_index, asset: r.asset, owner: r.owner, registeredAt: r.registered_at, inscriptionSig: r.inscription_sig }));
+  // Secondary-market sales (Tensor, mainnet only) interleave with mints, newest
+  // first. Empty on devnet, so the feed is unchanged there.
+  const sales = recentSales(col.slug, limit).map((s) => ({ kind: "sale", index: s.index, asset: s.asset, price: s.price, buyer: s.buyer, source: s.source, registeredAt: s.blockTime, inscriptionSig: s.inscriptionSig }));
+  const recent = [...mints, ...sales].sort((a, b) => (b.registeredAt || 0) - (a.registeredAt || 0)).slice(0, limit);
+  return c.json({ recent });
 });
 
 app.get("/stats", (c) => {
@@ -418,6 +424,7 @@ export function startJobs() {
   setInterval(() => {
     reap().catch((e) => console.error("[reaper]", e));
   }, config.reaperMs);
+  startTensorPoller(); // no-op unless TENSOR_API_KEY is set and cluster is mainnet
 }
 
 if (import.meta.main) {
