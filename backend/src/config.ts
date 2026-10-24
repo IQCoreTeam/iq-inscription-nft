@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Keypair, PublicKey } from "@solana/web3.js";
+import { networkFor, type Cluster } from "./networks.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(HERE, "..", "..");
@@ -36,10 +37,19 @@ function loadKeypair(path: string): Keypair {
 
 export const idl = JSON.parse(readFileSync(IDL_PATH, "utf8"));
 
+// Pick the network preset once. Every cluster-coupled value (gateway, tensor,
+// irys, explorer, the RPC default) derives from it, so they can never desync
+// from CLUSTER. To retune a network, edit networks.ts, not this file or the env.
+const cluster = env("CLUSTER", "devnet") as Cluster;
+const net = networkFor(cluster);
+// RPC is the one coupled value with a secret (mainnet Helius key), so it alone
+// keeps an env override; empty/unset falls back to the preset's public default.
+const rpcOverride = (process.env.RPC_URLS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+
 export const config = {
   port: Number(env("PORT", "8787")),
   dbPath: repoPath(env("DB_PATH", "backend/.data/nft.sqlite")),
-  cluster: env("CLUSTER", "devnet") as "devnet" | "mainnet",
+  cluster,
   programId: new PublicKey(idl.address as string),
 
   // The co-signer. Never the fee payer. File mode 0600, never in git.
@@ -47,14 +57,14 @@ export const config = {
 
   // Primary first. Rotation walks the list on 429/5xx. Never a user-supplied
   // endpoint: a hostile RPC could return a doctored transaction and walk a fake
-  // inscription past the verifier.
-  rpcUrls: env("RPC_URLS", "https://api.devnet.solana.com")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
+  // inscription past the verifier. Default from the preset; RPC_URLS overrides.
+  rpcUrls: rpcOverride.length ? rpcOverride : net.rpcUrls,
 
-  // Where the on-chain uri and the metadata image point. A cache over the chain.
-  gatewayBase: env("GATEWAY_BASE", "https://gateway.iqlabs.dev").replace(/\/$/, ""),
+  // Where the on-chain uri and the metadata image point (a cache over the chain)
+  // and the cluster suffix for solscan external_url. Both from the preset so a
+  // devnet mint never bakes a mainnet host. See networks.ts.
+  gatewayBase: net.gatewayBase,
+  explorerCluster: net.explorerCluster,
   // The slug of the global single-NFT collection (max_supply 0) that
   // /single/mint registers into.
   singleSlug: env("SINGLE_SLUG", "iq6900-inscriptions"),
@@ -77,8 +87,9 @@ export const config = {
   // Permanent image storage on Arweave via Irys, paid in SOL by the creator's
   // deploy flow (deploy-collection) or an ops key. Optional for the API process.
   arweaveKeypairPath: process.env.ARWEAVE_KEYPAIR ? repoPath(process.env.ARWEAVE_KEYPAIR) : "",
-  irysDevnet: env("IRYS_DEVNET", "true") === "true",
-  arweaveGateway: env("ARWEAVE_GATEWAY", "https://gateway.irys.xyz").replace(/\/$/, ""),
+  // Irys bundler mode + image-bytes gateway, both from the preset (devnet vs mainnet).
+  irysDevnet: net.irysDevnet,
+  arweaveGateway: net.arweaveGateway,
 
   maxOpenReservationsPerWallet: Number(env("MAX_OPEN_RESERVATIONS_PER_WALLET", "3")),
   reservePerIpPerMinute: Number(env("RESERVE_PER_IP_PER_MINUTE", "10")),
@@ -91,7 +102,8 @@ export const config = {
 
   // Tensor secondary-market sales (read-only). The key is mainnet-scoped: the
   // devnet host rejects it, so the poller only runs on mainnet. Empty = off.
+  // The base host is cluster-keyed in the preset.
   tensorApiKey: env("TENSOR_API_KEY", ""),
-  tensorBase: `https://api.${env("CLUSTER", "devnet")}.tensordev.io/api/v1`,
+  tensorBase: net.tensorBase,
   tensorPollMs: Number(env("TENSOR_POLL_MS", "90000")),
 };

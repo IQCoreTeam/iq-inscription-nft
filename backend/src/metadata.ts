@@ -28,7 +28,7 @@ export function buildMetadata(collection: CollectionRow, item: ItemRow, c: strin
     symbol: collection.symbol,
     description: template.description ?? collection.description,
     image,
-    external_url: `https://solscan.io/tx/${c}`,
+    external_url: `https://solscan.io/tx/${c}${config.explorerCluster}`,
     attributes: [
       ...(template.attributes ?? []).map((a) => ({ trait_type: a.trait_type, value: a.value })),
       { trait_type: "inscription", value: c },
