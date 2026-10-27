@@ -51,9 +51,21 @@ export type Staged = {
   itemCount: number;
 };
 
+// The allocator and on-chain bitmap address exactly 1..itemCount.
+export function validateItemIndices(items: { index: number }[]): void {
+  const seen = new Set<number>();
+  for (const { index } of items) {
+    if (!Number.isInteger(index) || index < 1 || index > items.length || seen.has(index)) {
+      throw new Error(`item indices must be unique integers from 1 to ${items.length}`);
+    }
+    seen.add(index);
+  }
+}
+
 // Upload each image to Arweave, build the manifest + collection.json. `single`
 // (itemCount 0) skips Arweave and leaves the manifest empty (no items, no sig).
 export async function stageCollection(spec: DeploySpec, items: StageItem[]): Promise<Staged> {
+  validateItemIndices(items);
   const manifestItems: ManifestItem[] = [];
   for (const it of items) {
     const arweave_id = await uploadToArweave(it.bytes, it.mime);
@@ -173,21 +185,21 @@ export function recordCollection(args: {
   bannerSig?: string | null;
 }): void {
   const { spec, staged } = args;
-  db.run("BEGIN");
-  db.query(
-    `INSERT INTO collection (slug, core_collection, registry, name, symbol, description, creator, treasury, max_supply,
-       price_lamports, deposit_lamports, sequential, shuffle_seed, shuffle_commit, manifest_sig, manifest_hash, meta_sig, logo_sig, banner_sig, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)`,
-  ).run(
-    spec.slug, args.collectionPubkey.toBase58(), args.registry.toBase58(), spec.name, spec.symbol, spec.description,
-    args.creatorPubkey.toBase58(), staged.itemCount, spec.price, spec.deposit, spec.sequential ? 1 : 0,
-    staged.seed.toString("hex"), staged.shuffleCommit, args.manifestSig, staged.manifestHash, args.metaSig,
-    args.logoSig ?? null, args.bannerSig ?? null, nowSec(),
-  );
-  const ins = db.query("INSERT INTO item (slug, item_index, name, image_sha256, image_mime, meta_sha256, arweave_id, template) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)");
-  for (const it of args.items) {
-    const m = staged.manifestItems.find((x) => x.index === it.index)!;
-    ins.run(spec.slug, it.index, it.name, m.image_sha256, m.image_mime, m.meta_sha256, m.arweave_id, JSON.stringify(it.template));
-  }
-  db.run("COMMIT");
+  db.transaction(() => {
+    db.query(
+      `INSERT INTO collection (slug, core_collection, registry, name, symbol, description, creator, treasury, max_supply,
+         price_lamports, deposit_lamports, sequential, shuffle_seed, shuffle_commit, manifest_sig, manifest_hash, meta_sig, logo_sig, banner_sig, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)`,
+    ).run(
+      spec.slug, args.collectionPubkey.toBase58(), args.registry.toBase58(), spec.name, spec.symbol, spec.description,
+      args.creatorPubkey.toBase58(), staged.itemCount, spec.price, spec.deposit, spec.sequential ? 1 : 0,
+      staged.seed.toString("hex"), staged.shuffleCommit, args.manifestSig, staged.manifestHash, args.metaSig,
+      args.logoSig ?? null, args.bannerSig ?? null, nowSec(),
+    );
+    const ins = db.query("INSERT INTO item (slug, item_index, name, image_sha256, image_mime, meta_sha256, arweave_id, template) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)");
+    for (const it of args.items) {
+      const m = staged.manifestItems.find((x) => x.index === it.index)!;
+      ins.run(spec.slug, it.index, it.name, m.image_sha256, m.image_mime, m.meta_sha256, m.arweave_id, JSON.stringify(it.template));
+    }
+  })();
 }

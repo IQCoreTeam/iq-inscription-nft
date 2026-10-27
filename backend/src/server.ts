@@ -15,7 +15,7 @@ import { getReservation, markAwaitingSubmit, markCancelled, markRejected, touchR
 import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
-import { stageCollection, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type Staged } from "./creator.ts";
+import { validateItemIndices, stageCollection, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type Staged } from "./creator.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { startTensorPoller, recentSales } from "./tensor.ts";
@@ -234,12 +234,14 @@ app.post("/creator/stage", async (c) => {
   // items: [{ index, name, mime, imageBase64, template }]; the browser compresses first.
   const raw = Array.isArray(b.items) ? b.items : [];
   const items: StageItem[] = raw.map((it: any, i: number) => ({
-    index: Number(it.index) || i + 1,
+    index: it.index === undefined ? i + 1 : Number(it.index),
     name: typeof it.name === "string" && it.name ? it.name : `${b.name} #${i + 1}`,
     bytes: Buffer.from(typeof it.imageBase64 === "string" ? it.imageBase64 : "", "base64"),
     mime: typeof it.mime === "string" ? it.mime : "image/png",
     template: typeof it.template === "object" && it.template ? it.template : {},
   }));
+  try { validateItemIndices(items); }
+  catch (e) { return c.json({ error: (e as Error).message }, 400); }
   for (const it of items) if (Buffer.byteLength(it.name) > 80) return c.json({ error: `name over 80 bytes at item ${it.index}` }, 400);
   if (!b.single && items.length === 0) return c.json({ error: "no items (or pass single:true)" }, 400);
 
