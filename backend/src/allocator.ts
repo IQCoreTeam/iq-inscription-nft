@@ -15,7 +15,6 @@ import { config } from "./config.ts";
 import { getItem, permutationOf } from "./collections.ts";
 import { withConnection } from "./rpcpool.ts";
 import { fetchRegistry, isMinted } from "./program.ts";
-import { markConfirmed } from "./reservations.ts";
 
 export class ReserveError extends Error {
   constructor(public status: number, message: string) {
@@ -27,7 +26,10 @@ const openByWallet = db.query<{ n: number }, [string]>(
   `SELECT COUNT(*) AS n FROM reservation WHERE wallet = ? AND state IN ('reserved','awaiting_submit')`
 );
 const heldInCollection = db.query<{ n: number }, [string, string]>(
-  `SELECT COUNT(*) AS n FROM reservation WHERE slug = ? AND wallet = ? AND state IN ('reserved','awaiting_submit','confirmed')`
+  // A bitmap-only recovery marks an unknown prior mint confirmed without an
+  // inscription signature; it must not count against this requester's quota.
+  `SELECT COUNT(*) AS n FROM reservation WHERE slug = ? AND wallet = ?
+   AND (state IN ('reserved','awaiting_submit') OR (state = 'confirmed' AND inscription_sig IS NOT NULL))`
 );
 const onAllowlist = db.query<{ n: number }, [string, string]>("SELECT COUNT(*) AS n FROM allowlist WHERE slug = ? AND wallet = ?");
 const depositUsed = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM reservation WHERE deposit_sig = ?");
@@ -39,7 +41,7 @@ const getCursor = db.query<{ cursor: number }, [string]>("SELECT cursor FROM col
 const setCursor = db.query("UPDATE collection SET cursor = ?2 WHERE slug = ?1");
 const insertReservation = db.query(
   `INSERT INTO reservation (id, slug, item_index, wallet, burner, deposit_sig, state, created_at, expires_at)
-   VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'reserved', ?7, ?8)`
+   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
 );
 
 export type Reservation = {
@@ -109,12 +111,18 @@ export async function reserve(c: CollectionRow, wallet: string, burner: string, 
   let id: string;
   let index: number;
   let expiresAt: number;
+  let minted: boolean;
   for (;;) {
     const now = nowSec();
     expiresAt = now + config.reservationTtlSeconds;
     id = randomUUID();
     db.run("BEGIN IMMEDIATE");
     try {
+      // RPC awaits above can let another reservation consume this wallet's limit.
+      checkEligibility(c, wallet);
+      if (c.deposit_lamports && depositSig && (depositUsed.get(depositSig)?.n ?? 0) > 0) {
+        throw new ReserveError(409, "deposit already used");
+      }
       const returned = takeReturned.get(c.slug);
       if (returned) {
         index = returned.item_index;
@@ -125,15 +133,18 @@ export async function reserve(c: CollectionRow, wallet: string, burner: string, 
         index = permutation[cursor];
         setCursor.run(c.slug, cursor + 1);
       }
-      insertReservation.run(id, c.slug, index, wallet, burner, c.deposit_lamports ? depositSig : null, now, expiresAt);
+      minted = isMinted(bitmap, index);
+      // A recovered mint predates this request. Only the usable item consumes its deposit.
+      insertReservation.run(id, c.slug, index, wallet, burner,
+        c.deposit_lamports && !minted ? depositSig : null,
+        minted ? "confirmed" : "reserved", now, expiresAt);
       db.run("COMMIT");
     } catch (e) {
       db.run("ROLLBACK");
       throw e;
     }
-    if (!isMinted(bitmap, index)) break;
+    if (!minted) break;
     console.warn(`[reserve] ${c.slug} #${index} is already minted on chain but the DB did not know; holding and skipping`);
-    markConfirmed(id);
   }
 
   const item = getItem(c.slug, index)!;
