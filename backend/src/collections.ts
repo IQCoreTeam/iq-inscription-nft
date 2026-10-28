@@ -7,8 +7,10 @@ import { derivePermutation } from "./shuffle.ts";
 import type { OnChainSlot } from "./program.ts";
 
 const bySlug = db.query<CollectionRow, [string]>("SELECT * FROM collection WHERE slug = ?");
-// Bump order (pump.fun style): most recently minted first, new collections next.
-const all = db.query<CollectionRow, []>("SELECT * FROM collection ORDER BY last_mint_at DESC, created_at DESC");
+// Bump order (pump.fun style) by latest activity: a mint or a launch, whichever
+// is newer. Ordering by mints alone sank every fresh launch below collections
+// that had ever minted, so creators could not find what they just deployed.
+const all = db.query<CollectionRow, []>("SELECT * FROM collection ORDER BY MAX(last_mint_at, created_at) DESC, created_at DESC");
 const slotExistsStmt = db.query<{ one: number }, [string, number]>("SELECT 1 AS one FROM slot WHERE slug = ? AND item_index = ?");
 const bumpMintStmt = db.query("UPDATE collection SET last_mint_at = ?2 WHERE slug = ?1");
 const ownersStmt = db.query<{ n: number }, [string]>("SELECT COUNT(DISTINCT owner) AS n FROM slot WHERE slug = ?");

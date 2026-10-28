@@ -11,6 +11,7 @@ process.env.REGISTRAR_KEYPAIR = join(dir, "registrar.json");
 writeFileSync(process.env.REGISTRAR_KEYPAIR, JSON.stringify(Array.from(Keypair.generate().secretKey)));
 const { db } = await import("./db.ts");
 const { recordCollection, stageCollection } = await import("./creator.ts");
+const { listCollections } = await import("./collections.ts");
 afterAll(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
 
 const spec = { slug: "regression", name: "Test", symbol: "TEST", description: "", price: 0, deposit: 0, royaltyBps: 0, sequential: true };
@@ -66,4 +67,21 @@ test("stage API rejects duplicate and invalid indices with HTTP 400", async () =
   });
   expect(response.status).toBe(200);
   expect((await response.json()).itemCount).toBe(0);
+});
+
+// A fresh launch is activity too: it must not sink below every collection that
+// ever had a mint, or creators cannot find what they just deployed.
+test("collections list by latest activity, launch or mint", () => {
+  const record = (slug: string, createdAt: number, lastMintAt: number) => {
+    recordCollection({ ...args([1]), spec: { ...spec, slug } });
+    db.run("UPDATE collection SET created_at = ?2, last_mint_at = ?3 WHERE slug = ?1", [slug, createdAt, lastMintAt]);
+  };
+  try {
+    record("old-minted-recently", 10, 200);
+    record("minted-a-while-ago", 50, 80);
+    record("just-launched", 100, 0);
+    expect(listCollections().map((c) => c.slug)).toEqual(["old-minted-recently", "just-launched", "minted-a-while-ago"]);
+  } finally {
+    db.run("DELETE FROM item"); db.run("DELETE FROM collection");
+  }
 });
