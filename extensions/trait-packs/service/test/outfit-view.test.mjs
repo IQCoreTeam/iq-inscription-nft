@@ -92,7 +92,8 @@ test("derived view preserves immutable references and reuses cached base metadat
   assert(equipped.attributes.some((a) => a.trait_type === "Equipped Hair"));
   assert.notEqual(a.image, equipped.image);
   assert.equal(f.reads, 1);
-  const old = new URL(a.image);
+  assert.equal(a.image,f.original.image);
+  const old = new URL(`http://127.0.0.1:4547/wardrobe/image/${id}?r=0&h=${a.properties.iqLoadout.hash}`);
   const response = await f.view.handle(new Request(old));
   assert.equal(response.status, 409);
   assert.equal(f.rendered, 0);
@@ -143,4 +144,10 @@ test("base URI, collection and metadata identity changes fail closed", async () 
   const m = fixture();
   m.asset.attributes.attributeList[0].value = "not-a-signature";
   await assert.rejects(() => m.view.metadata(id), /metadata reference/);
+});
+
+test("empty outfits preserve original image and file MIME without rendering",async()=>{
+  const f=fixture();f.original.image='https://example.invalid/original.avif';f.original.properties={files:[{uri:f.original.image,type:'image/avif'}]};
+  const metadata=await f.view.metadata(id);assert.equal(metadata.image,f.original.image);assert.deepEqual(metadata.properties.files,f.original.properties.files);assert.equal(f.rendered,0);
+  const response=await f.view.handle(new Request(`http://127.0.0.1:4547/wardrobe/image/${id}?r=0&h=${metadata.properties.iqLoadout.hash}`));assert.equal(response.status,409);assert.equal(f.rendered,0);
 });

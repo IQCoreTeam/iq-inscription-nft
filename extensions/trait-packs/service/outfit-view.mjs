@@ -98,7 +98,8 @@ export function createOutfitView({
   async function metadata(id) {
     const s = await state(id),
       base = structuredClone(s.base),
-      image = `${origin}/wardrobe/image/${id}?r=${s.loadout.revision}&h=${s.loadoutHash}`;
+      equipped = s.loadout.definitionIds.some(id=>id!==255),
+      image = equipped ? `${origin}/wardrobe/image/${id}?r=${s.loadout.revision}&h=${s.loadoutHash}` : base.image;
     return {
       ...base,
       image,
@@ -116,7 +117,7 @@ export function createOutfitView({
       ],
       properties: {
         ...base.properties,
-        files: [{ uri: image, type: "image/webp" }],
+        ...(equipped ? {files: [{ uri: image, type: "image/webp" }]} : {}),
         iqBaseMetadata: s.metadataSignature,
         iqLoadout: {
           program,
@@ -136,6 +137,7 @@ export function createOutfitView({
       throw Object.assign(Error("Outfit changed; refresh NFT metadata"), {
         status: 409,
       });
+    if(s.loadout.definitionIds.every(id=>id===255))throw Object.assign(Error('No active outfit; refresh the original image reference'),{status:409});
     return render({ address: id, ...s });
   }
   // Fetch-standard adapter is usable in the existing gateway/router. Caller

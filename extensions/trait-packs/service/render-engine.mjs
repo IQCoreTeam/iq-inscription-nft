@@ -3,14 +3,19 @@ import {createRequire} from 'node:module';
 import {readFile,writeFile,mkdir,mkdtemp,rename,rm,access,realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {isFinalArtCompatible} from './final-art-selection.mjs';
 const sharp=createRequire(import.meta.url)('sharp');
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 // Master layers and full-canvas occlusion masks share file/PNG/alpha validation.
-export async function loadPngSource(fileName,assetRoot,{transparent=false,canvas}={}) {
+export async function resolveAssetPath(fileName,assetRoot) {
   const root=await realpath(assetRoot),file=path.resolve(root,fileName);
   const inside=p=>{const relative=path.relative(root,p);return relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative);};
   if(!inside(file))throw Error('Asset outside configured root.');
   const actual=await realpath(file);if(!inside(actual))throw Error('Asset outside configured root.');
+  return actual;
+}
+export async function loadPngSource(fileName,assetRoot,{transparent=false,canvas}={}) {
+  const actual=await resolveAssetPath(fileName,assetRoot);
   const bytes=await readFile(actual),metadata=await sharp(bytes).metadata();
   if(metadata.format!=='png'||metadata.pages>1)throw Error('Master layers and masks must be static PNG.');
   if(canvas&&(metadata.width!==canvas.width||metadata.height!==canvas.height))throw Error('Occlusion mask must match canvas dimensions.');
@@ -20,7 +25,7 @@ export async function loadPngSource(fileName,assetRoot,{transparent=false,canvas
   }
   return {bytes,metadata,sha256:hash(bytes)};
 }
-export function plan(config) {
+export function validateRenderConfig(config) {
   if(!config.seed || !Number.isInteger(config.count) || config.count<1) throw Error('A seed and positive integer count are required.');
   if(config.outputFormat!==undefined&&!['png','webp'].includes(config.outputFormat))throw Error('Output format must be png or webp.');
   if(!config.canvas || ![config.canvas.width,config.canvas.height].every(n=>Number.isInteger(n)&&n>0&&n<=4096)) throw Error('Invalid canvas.');
@@ -54,9 +59,10 @@ export function plan(config) {
     const mask=asset.occlusion,targetIndex=config.groups.findIndex(g=>g.name===mask?.targetGroup);
     if(group.role!=='overlay'||asset.file===null||!mask||typeof mask!=='object'||Array.isArray(mask)||Object.keys(mask).some(k=>!['targetGroup','maskFile'].includes(k))||typeof mask.maskFile!=='string'||!mask.maskFile.trim()||targetIndex<0||targetIndex>=index||config.groups[targetIndex].role!=='overlay')throw Error('Occlusion requires a visible overlay and an earlier overlay target.');
   }
-  const compatible=chosen=>Object.values(chosen).every(asset=>
-    Object.entries(asset.requires||{}).every(([group,allowed])=>allowed.includes(chosen[group].id))&&
-    Object.entries(asset.excludes||{}).every(([group,blocked])=>!blocked.includes(chosen[group].id)));
+  return {exact};
+}
+export function plan(config) {
+  const {exact}=validateRenderConfig(config);
   const dnaFor=chosen=>JSON.stringify(config.groups.map(g=>chosen[g.name].id));
   const capacity=config.groups.reduce((n,g)=>n*g.assets.filter(a=>!exact||a.count>0).length,1);
   if(capacity<config.count)throw Error('Requested '+config.count+' unique items, but only '+capacity+' combinations exist.');
@@ -77,30 +83,30 @@ export function plan(config) {
     }
     const dna=rows.map(dnaFor),multiplicity=new Map();
     for(const key of dna)multiplicity.set(key,(multiplicity.get(key)||0)+1);
-    let conflicts=rows.filter(row=>!compatible(row)).length+[...multiplicity.values()].reduce((n,count)=>n+Math.max(0,count-1),0);
+    let conflicts=rows.filter(row=>!isFinalArtCompatible(row)).length+[...multiplicity.values()].reduce((n,count)=>n+Math.max(0,count-1),0);
     const mutableGroups=config.groups.filter(g=>g.assets.filter(a=>a.count>0).length>1);
     const budget=Math.min(500000,Math.max(10000,config.count*200));let attempts=0;
     for(let sweep=0;sweep<16&&conflicts>0&&attempts<budget;sweep++) {
       let accepted=0;
       for(let i=0;i<rows.length&&conflicts>0&&attempts<budget;i++) {
-        if(compatible(rows[i])&&multiplicity.get(dna[i])===1)continue;
+        if(isFinalArtCompatible(rows[i])&&multiplicity.get(dna[i])===1)continue;
         for(let trial=0;trial<80&&conflicts>0&&attempts<budget;trial++) {
           attempts++;
           if(!mutableGroups.length)break;
           const j=Math.floor(roll()*rows.length),group=mutableGroups[Math.floor(roll()*mutableGroups.length)].name;
           if(i===j||rows[i][group]===rows[j][group])continue;
-          const oldA=dna[i],oldB=dna[j],oldIncompatible=Number(!compatible(rows[i]))+Number(!compatible(rows[j]));
+          const oldA=dna[i],oldB=dna[j],oldIncompatible=Number(!isFinalArtCompatible(rows[i]))+Number(!isFinalArtCompatible(rows[j]));
           [rows[i][group],rows[j][group]]=[rows[j][group],rows[i][group]];
           const nextA=dnaFor(rows[i]),nextB=dnaFor(rows[j]),keys=new Set([oldA,oldB,nextA,nextB]);
           const beforeCounts=new Map([...keys].map(key=>[key,multiplicity.get(key)||0]));
           const before=oldIncompatible+[...beforeCounts.values()].reduce((n,count)=>n+Math.max(0,count-1),0);
           for(const key of [oldA,oldB])multiplicity.set(key,multiplicity.get(key)-1);
           for(const key of [nextA,nextB])multiplicity.set(key,(multiplicity.get(key)||0)+1);
-          const after=Number(!compatible(rows[i]))+Number(!compatible(rows[j]))+[...keys].reduce((n,key)=>n+Math.max(0,multiplicity.get(key)-1),0);
+          const after=Number(!isFinalArtCompatible(rows[i]))+Number(!isFinalArtCompatible(rows[j]))+[...keys].reduce((n,key)=>n+Math.max(0,multiplicity.get(key)-1),0);
           if(after<before||(after===before&&roll()<0.08)) {
             conflicts+=after-before;accepted++;dna[i]=nextA;dna[j]=nextB;
             for(const key of keys)if(multiplicity.get(key)===0)multiplicity.delete(key);
-            if(compatible(rows[i])&&multiplicity.get(dna[i])===1)break;
+            if(isFinalArtCompatible(rows[i])&&multiplicity.get(dna[i])===1)break;
           } else {
             [rows[i][group],rows[j][group]]=[rows[j][group],rows[i][group]];
             for(const [key,count] of beforeCounts)if(count)multiplicity.set(key,count);else multiplicity.delete(key);
@@ -122,7 +128,7 @@ export function plan(config) {
     }
     if(conflicts)throw Error('Exact-count planner could not find unique compatible recipes within its bounded search budget; feasibility is unproven. Adjust quotas or compatibility.');
     // Certify actual output rather than trusting the repair counter.
-    if(new Set(dna).size!==config.count||rows.some(row=>!compatible(row)))throw Error('Exact-count certification failed.');
+    if(new Set(dna).size!==config.count||rows.some(row=>!isFinalArtCompatible(row)))throw Error('Exact-count certification failed.');
     for(const group of config.groups)for(const asset of group.assets)if(rows.filter(row=>row[group.name]===asset).length!==asset.count)throw Error('Exact-count certification failed.');
     return rows.map((chosen,i)=>({dna:dna[i],chosen}));
   }
@@ -133,7 +139,7 @@ export function plan(config) {
       chosen[group.name]=group.assets.find(a=>{ticket-=a.weight;return ticket<0;})||group.assets.at(-1);
     }
     const dna=dnaFor(chosen);
-    if(compatible(chosen)&&!seen.has(dna)){seen.add(dna);combinations.push({dna,chosen});}
+    if(isFinalArtCompatible(chosen)&&!seen.has(dna)){seen.add(dna);combinations.push({dna,chosen});}
   }
   if(combinations.length<config.count)throw Error('Requested '+config.count+' unique items; found only '+combinations.length+' compatible combinations within the bounded sampling budget. Check compatibility, weights and supply.');
   return combinations;
