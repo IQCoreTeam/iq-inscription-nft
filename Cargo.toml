@@ -1,5 +1,6 @@
 [workspace]
 members = ["programs/*"]
+exclude = ["extensions/trait-packs/program"]
 resolver = "2"
 
 [profile.release]

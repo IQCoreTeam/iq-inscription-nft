@@ -24,6 +24,12 @@ use mpl_core::types::{
     Attribute, Attributes, Creator, Plugin, PluginAuthorityPair, Royalties, RuleSet,
 };
 
+use mpl_core::instructions::AddExternalPluginAdapterV1CpiBuilder;
+use mpl_core::types::{
+    ExternalCheckResult, ExternalPluginAdapterInitInfo, ExtraAccount, HookableLifecycleEvent,
+    Key as CoreKey, OracleInitInfo, PluginAuthority, Seed, UpdateAuthority, ValidationResultsOffset,
+};
+
 declare_id!("FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu");
 
 const REGISTRY_SEED: &[u8] = b"registry";
@@ -289,21 +295,194 @@ pub mod iq_inscription_nft {
     // uri only, never the name or the Attributes: the identity of an asset can
     // never be edited, even by us. For gateway host moves.
     pub fn update_asset_uri(ctx: Context<UpdateAssetUri>, new_uri: String) -> Result<()> {
-        require!(new_uri.len() <= MAX_URI_BYTES, ErrorCode::UriTooLong);
+        write_asset_uri(
+            &ctx.accounts.registry,
+            &ctx.accounts.asset.to_account_info(),
+            &ctx.accounts.collection.to_account_info(),
+            &ctx.accounts.collection_auth.to_account_info(),
+            &ctx.accounts.admin.to_account_info(),
+            &ctx.accounts.mpl_core_program.to_account_info(),
+            &ctx.accounts.system_program.to_account_info(),
+            new_uri,
+        )
+    }
+
+    /// Both the creator and the asset's current holder approve a derived view.
+    /// The original inscription Attributes, name and owner remain unchanged.
+    pub fn opt_in_wardrobe_metadata(
+        ctx: Context<OptInWardrobeMetadata>,
+        new_uri: String,
+    ) -> Result<()> {
+        let asset_info = &ctx.accounts.update.asset;
+        require_keys_eq!(*asset_info.owner, mpl_core::ID, ErrorCode::WrongAsset);
+        let asset = mpl_core::accounts::BaseAssetV1::from_bytes(&asset_info.try_borrow_data()?)
+            .map_err(|_| error!(ErrorCode::WrongAsset))?;
+        require!(asset.key == CoreKey::AssetV1, ErrorCode::WrongAsset);
+        require_keys_eq!(asset.owner, ctx.accounts.owner.key(), ErrorCode::WrongAsset);
+        require!(
+            asset.update_authority
+                == UpdateAuthority::Collection(ctx.accounts.update.collection.key()),
+            ErrorCode::WrongAsset
+        );
+        let recovery = &mut ctx.accounts.recovery;
+        if recovery.asset == Pubkey::default() {
+            recovery.asset = ctx.accounts.update.asset.key();
+            recovery.collection = ctx.accounts.update.collection.key();
+            recovery.original_uri = asset.uri.clone();
+        }
+        require_keys_eq!(
+            recovery.asset,
+            ctx.accounts.update.asset.key(),
+            ErrorCode::WrongAsset
+        );
+        require_keys_eq!(
+            recovery.collection,
+            ctx.accounts.update.collection.key(),
+            ErrorCode::WrongAsset
+        );
+        write_asset_uri(
+            &ctx.accounts.update.registry,
+            &ctx.accounts.update.asset.to_account_info(),
+            &ctx.accounts.update.collection.to_account_info(),
+            &ctx.accounts.update.collection_auth.to_account_info(),
+            &ctx.accounts.owner.to_account_info(),
+            &ctx.accounts.update.mpl_core_program.to_account_info(),
+            &ctx.accounts.update.system_program.to_account_info(),
+            new_uri,
+        )
+    }
+
+    /// Restores only the immutable pre-opt-in URI, authorized by today's owner.
+    pub fn restore_wardrobe_metadata(ctx: Context<RestoreWardrobeMetadata>) -> Result<()> {
+        let asset =
+            mpl_core::accounts::BaseAssetV1::from_bytes(&ctx.accounts.asset.try_borrow_data()?)
+                .map_err(|_| error!(ErrorCode::WrongAsset))?;
+        require_keys_eq!(asset.owner, ctx.accounts.owner.key(), ErrorCode::WrongAsset);
+        require!(
+            asset.key == CoreKey::AssetV1
+                && asset.update_authority
+                    == UpdateAuthority::Collection(ctx.accounts.collection.key()),
+            ErrorCode::WrongAsset
+        );
+        write_asset_uri(
+            &ctx.accounts.registry,
+            &ctx.accounts.asset.to_account_info(),
+            &ctx.accounts.collection.to_account_info(),
+            &ctx.accounts.collection_auth.to_account_info(),
+            &ctx.accounts.owner.to_account_info(),
+            &ctx.accounts.mpl_core_program.to_account_info(),
+            &ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.recovery.original_uri.clone(),
+        )
+    }
+
+    /// Explicit creator and current-holder opt-in. This adds only an immutable
+    /// burn rejection hook; it never delegates transfer or edits base metadata.
+    pub fn attach_wardrobe_oracle(ctx: Context<AttachWardrobeOracle>) -> Result<()> {
+        require_keys_eq!(
+            collection_update_authority(&ctx.accounts.collection)?,
+            ctx.accounts.collection_auth.key(),
+            ErrorCode::CollectionNotUnderProgramAuthority
+        );
+        let asset =
+            mpl_core::accounts::BaseAssetV1::from_bytes(&ctx.accounts.asset.try_borrow_data()?)
+                .map_err(|_| error!(ErrorCode::WrongAsset))?;
+        require!(asset.key == CoreKey::AssetV1, ErrorCode::WrongAsset);
+        require_keys_eq!(asset.owner, ctx.accounts.owner.key(), ErrorCode::WrongAsset);
+        require!(
+            asset.update_authority == UpdateAuthority::Collection(ctx.accounts.collection.key()),
+            ErrorCode::WrongAsset
+        );
+        let oracle_program = ctx.accounts.oracle_program.key();
+        require!(
+            ctx.accounts.oracle_program.executable,
+            ErrorCode::InvalidWardrobePolicy
+        );
+        let expected = Pubkey::find_program_address(
+            &[b"loadout-v4", ctx.accounts.asset.key().as_ref()],
+            &oracle_program,
+        )
+        .0;
+        require_keys_eq!(
+            expected,
+            ctx.accounts.loadout.key(),
+            ErrorCode::InvalidWardrobePolicy
+        );
+        require_keys_eq!(
+            *ctx.accounts.loadout.owner,
+            oracle_program,
+            ErrorCode::InvalidWardrobePolicy
+        );
+        let expected_pool = Pubkey::find_program_address(
+            &[b"sale-v4", ctx.accounts.collection.key().as_ref()],
+            &oracle_program,
+        )
+        .0;
+        require_keys_eq!(
+            expected_pool,
+            ctx.accounts.wardrobe_pool.key(),
+            ErrorCode::InvalidWardrobePolicy
+        );
+        require_keys_eq!(
+            *ctx.accounts.wardrobe_pool.owner,
+            oracle_program,
+            ErrorCode::InvalidWardrobePolicy
+        );
+        {
+            let pool = ctx.accounts.wardrobe_pool.try_borrow_data()?;
+            require!(
+                pool.len() == 4352
+                    && &pool[..8] == b"NUBSALE4"
+                    && pool[8..40] == ctx.accounts.admin.key().to_bytes()
+                    && pool[40..72] == ctx.accounts.collection.key().to_bytes()
+                    && pool[254] == 1
+                    && pool[255..287] == ctx.accounts.registry.key().to_bytes()
+                    && pool[287..319] == crate::ID.to_bytes(),
+                ErrorCode::InvalidWardrobePolicy
+            );
+        }
+        {
+            let policy = ctx.accounts.loadout.try_borrow_data()?;
+            require!(
+                policy.len() == 312
+                    && &policy[..8] == b"NUBLOAD4"
+                    && policy[8..13] == [1, 2, 2, 2, 2]
+                    && policy[13] <= 7
+                    && policy[14..46] == ctx.accounts.asset.key().to_bytes()
+                    && policy[46..78] == ctx.accounts.wardrobe_pool.key().to_bytes()
+                    && policy[110..116].iter().all(|v| *v == 255)
+                    && policy[116..308].iter().all(|v| *v == 0),
+                ErrorCode::InvalidWardrobePolicy
+            );
+        }
         let registry_key = ctx.accounts.registry.key();
-        let auth_seeds: &[&[u8]] = &[
+        let seeds: &[&[u8]] = &[
             COLLECTION_AUTH_SEED,
             registry_key.as_ref(),
             &[ctx.accounts.registry.collection_auth_bump],
         ];
-        UpdateV2CpiBuilder::new(&ctx.accounts.mpl_core_program)
+        AddExternalPluginAdapterV1CpiBuilder::new(&ctx.accounts.mpl_core_program)
             .asset(&ctx.accounts.asset.to_account_info())
             .collection(Some(&ctx.accounts.collection.to_account_info()))
+            .payer(&ctx.accounts.owner.to_account_info())
             .authority(Some(&ctx.accounts.collection_auth.to_account_info()))
-            .payer(&ctx.accounts.admin.to_account_info())
             .system_program(&ctx.accounts.system_program.to_account_info())
-            .new_uri(new_uri)
-            .invoke_signed(&[auth_seeds])?;
+            .init_info(ExternalPluginAdapterInitInfo::Oracle(OracleInitInfo {
+                base_address: oracle_program,
+                init_plugin_authority: Some(PluginAuthority::None),
+                lifecycle_checks: vec![(
+                    HookableLifecycleEvent::Burn,
+                    ExternalCheckResult { flags: 4 },
+                )],
+                base_address_config: Some(ExtraAccount::CustomPda {
+                    seeds: vec![Seed::Bytes(b"loadout-v4".to_vec()), Seed::Asset],
+                    custom_program_id: Some(oracle_program),
+                    is_signer: false,
+                    is_writable: false,
+                }),
+                results_offset: Some(ValidationResultsOffset::Custom(8)),
+            }))
+            .invoke_signed(&[seeds])?;
         Ok(())
     }
 
@@ -620,6 +799,34 @@ pub struct RegisterSingle<'info> {
     pub system_program: Program<'info, System>,
 }
 
+fn write_asset_uri<'info>(
+    registry: &Account<'info, Registry>,
+    asset: &AccountInfo<'info>,
+    collection: &AccountInfo<'info>,
+    authority: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    core: &AccountInfo<'info>,
+    system: &AccountInfo<'info>,
+    new_uri: String,
+) -> Result<()> {
+    require!(new_uri.len() <= MAX_URI_BYTES, ErrorCode::UriTooLong);
+    let registry_key = registry.key();
+    let seeds: &[&[u8]] = &[
+        COLLECTION_AUTH_SEED,
+        registry_key.as_ref(),
+        &[registry.collection_auth_bump],
+    ];
+    UpdateV2CpiBuilder::new(core)
+        .asset(asset)
+        .collection(Some(collection))
+        .authority(Some(authority))
+        .payer(payer)
+        .system_program(system)
+        .new_uri(new_uri)
+        .invoke_signed(&[seeds])?;
+    Ok(())
+}
+
 #[derive(Accounts)]
 pub struct AdminOnly<'info> {
     pub admin: Signer<'info>,
@@ -667,6 +874,78 @@ pub struct UpdateAssetUri<'info> {
     #[account(address = mpl_core::ID)]
     pub mpl_core_program: UncheckedAccount<'info>,
 
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct OptInWardrobeMetadata<'info> {
+    pub update: UpdateAssetUri<'info>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(init_if_needed, payer = owner, space = 8 + 32 + 32 + 4 + MAX_URI_BYTES, seeds = [b"wardrobe-meta", update.asset.key().as_ref()], bump)]
+    pub recovery: Account<'info, WardrobeMetadataRecovery>,
+    // Anchor's init constraint needs the System program at this account level.
+    pub system_program: Program<'info, System>,
+}
+
+#[account]
+pub struct WardrobeMetadataRecovery {
+    pub asset: Pubkey,
+    pub collection: Pubkey,
+    pub original_uri: String,
+}
+
+#[derive(Accounts)]
+pub struct RestoreWardrobeMetadata<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(seeds = [REGISTRY_SEED, registry.collection.as_ref()], bump = registry.bump)]
+    pub registry: Account<'info, Registry>,
+    /// CHECK: registered identity, Core membership and current owner checked.
+    #[account(mut, owner = mpl_core::ID, address = recovery.asset @ ErrorCode::WrongAsset)]
+    pub asset: UncheckedAccount<'info>,
+    #[account(seeds = [b"wardrobe-meta", asset.key().as_ref()], bump, constraint = recovery.collection == registry.collection @ ErrorCode::WrongAsset)]
+    pub recovery: Account<'info, WardrobeMetadataRecovery>,
+    /// CHECK: pinned registered collection.
+    #[account(mut, address = registry.collection)]
+    pub collection: UncheckedAccount<'info>,
+    /// CHECK: collection signer PDA.
+    #[account(seeds = [COLLECTION_AUTH_SEED, registry.key().as_ref()], bump = registry.collection_auth_bump)]
+    pub collection_auth: UncheckedAccount<'info>,
+    /// CHECK: canonical Core program.
+    #[account(address = mpl_core::ID)]
+    pub mpl_core_program: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct AttachWardrobeOracle<'info> {
+    pub admin: Signer<'info>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(
+        seeds = [REGISTRY_SEED, registry.collection.as_ref()], bump = registry.bump,
+        has_one = admin @ ErrorCode::UnauthorizedAdmin
+    )]
+    pub registry: Account<'info, Registry>,
+    /// CHECK: Core membership and current owner are checked in the handler.
+    #[account(mut, owner = mpl_core::ID)]
+    pub asset: UncheckedAccount<'info>,
+    /// CHECK: pinned to this registry's actual collection and Core authority.
+    #[account(mut, address = registry.collection)]
+    pub collection: UncheckedAccount<'info>,
+    /// CHECK: this program signs only the narrow Core adapter installation.
+    #[account(seeds = [COLLECTION_AUTH_SEED, registry.key().as_ref()], bump = registry.collection_auth_bump)]
+    pub collection_auth: UncheckedAccount<'info>,
+    /// CHECK: executable opt-in program, selected by both admin and current holder.
+    pub oracle_program: UncheckedAccount<'info>,
+    /// CHECK: exact program-owned empty loadout PDA and policy bytes checked above.
+    pub loadout: UncheckedAccount<'info>,
+    /// CHECK: exact program-owned registry-aware pool PDA and fields checked above.
+    pub wardrobe_pool: UncheckedAccount<'info>,
+    /// CHECK: canonical Core program.
+    #[account(address = mpl_core::ID, executable)]
+    pub mpl_core_program: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -728,4 +1007,6 @@ pub enum ErrorCode {
     DepositOverPrice,
     #[msg("register_single needs a registry with max_supply 0")]
     NotASingleRegistry,
+    #[msg("wardrobe policy is not a valid empty program-owned loadout")]
+    InvalidWardrobePolicy,
 }

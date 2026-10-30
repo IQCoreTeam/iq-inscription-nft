@@ -22,3 +22,6 @@ backend/.data/
 backend/.env.*
 backend/.registrar*.json
 !backend/.env.example
+
+# Optional standalone pack program keeps its own build tree.
+extensions/trait-packs/program/target/
