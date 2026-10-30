@@ -1,0 +1,14 @@
+{
+  "name": "iq-outfit-view-local",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "bs58": "6.0.0",
+    "buffer": "6.0.3",
+    "sharp": "0.35.4"
+  }
+}

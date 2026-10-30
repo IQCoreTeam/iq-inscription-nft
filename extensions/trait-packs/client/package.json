@@ -1,0 +1,19 @@
+{
+  "name": "iq-trait-packs-client-local",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build": "esbuild browser-entry.mjs --bundle --platform=browser --format=esm --outfile=dist/browser.js"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "@solana/web3.js": "1.99.0",
+    "bs58": "6.0.0",
+    "buffer": "6.0.3",
+    "tweetnacl": "1.0.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}
