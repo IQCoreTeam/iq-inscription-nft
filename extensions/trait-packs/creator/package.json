@@ -1,0 +1,1 @@
+{"name":"iq-trait-packs-creator","private":true,"type":"module","scripts":{"test":"node --test test/*.test.mjs"},"dependencies":{"@noble/hashes":"1.8.0","@solana/web3.js":"1.99.0","buffer":"6.0.3"}}
