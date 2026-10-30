@@ -1,7 +1,7 @@
 import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { sha256 } from '@noble/hashes/sha256';
 import { Buffer } from 'buffer';
-import { addresses, account, instruction, encodeDefinitions, readPool, u64 } from '../client/protocol.mjs';
+import { addresses, account, instruction, encodeDefinitions, readPool, u64, packCharge } from '../client/protocol.mjs';
 
 // Validate before creating an irreversible header. Names are bounded by UTF-8
 // bytes and dependency chains must be expressible by the deployed program.
@@ -41,7 +41,8 @@ export function catalogSetup(spec, existingPool) {
   const expectedRegistry=PublicKey.findProgramAddressSync([Buffer.from('registry'),collection.toBuffer()],nftProgram)[0];
   if(!registry.equals(expectedRegistry))throw Error('Registry does not belong to this collection');
   for(const field of ['price','window','timeout'])if(!Number.isSafeInteger(spec[field])||spec[field]<0)throw Error('Invalid '+field);
-  if(spec.price===0||spec.window===0||spec.timeout===0)throw Error('Pack price and sale windows must be positive');
+  packCharge(spec.price);
+  if(spec.window===0||spec.timeout===0)throw Error('Pack price and sale windows must be positive');
   const encoded=validateCatalog(spec.definitions),hash=Buffer.from(sha256(encoded)),k=addresses(program,collection),plan=[];
   let appended=0;
   if(existingPool){

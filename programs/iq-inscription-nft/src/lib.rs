@@ -413,16 +413,6 @@ pub mod iq_inscription_nft {
             oracle_program,
             ErrorCode::InvalidWardrobePolicy
         );
-        let expected_pool = Pubkey::find_program_address(
-            &[b"sale-v4", ctx.accounts.collection.key().as_ref()],
-            &oracle_program,
-        )
-        .0;
-        require_keys_eq!(
-            expected_pool,
-            ctx.accounts.wardrobe_pool.key(),
-            ErrorCode::InvalidWardrobePolicy
-        );
         require_keys_eq!(
             *ctx.accounts.wardrobe_pool.owner,
             oracle_program,
@@ -430,10 +420,22 @@ pub mod iq_inscription_nft {
         );
         {
             let pool = ctx.accounts.wardrobe_pool.try_borrow_data()?;
+            require!(pool.len() == 4352, ErrorCode::InvalidWardrobePolicy);
+            let pool_seed: &[u8] = match &pool[..8] {
+                b"NUBSALE4" => b"sale-v4",
+                b"NUBSALE5" => b"sale-v5",
+                _ => return err!(ErrorCode::InvalidWardrobePolicy),
+            };
+            require_keys_eq!(
+                Pubkey::find_program_address(
+                    &[pool_seed, ctx.accounts.collection.key().as_ref()],
+                    &oracle_program,
+                ).0,
+                ctx.accounts.wardrobe_pool.key(),
+                ErrorCode::InvalidWardrobePolicy
+            );
             require!(
-                pool.len() == 4352
-                    && &pool[..8] == b"NUBSALE4"
-                    && pool[8..40] == ctx.accounts.admin.key().to_bytes()
+                pool[8..40] == ctx.accounts.admin.key().to_bytes()
                     && pool[40..72] == ctx.accounts.collection.key().to_bytes()
                     && pool[254] == 1
                     && pool[255..287] == ctx.accounts.registry.key().to_bytes()

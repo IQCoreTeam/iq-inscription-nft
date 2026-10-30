@@ -7,22 +7,30 @@ import {
 import nacl from "tweetnacl";
 import { Buffer } from "buffer";
 import bs58 from "bs58";
-import { addresses, account, instruction, u16 } from "./protocol.mjs";
+import { addresses, account, instruction, u16, u64 } from "./protocol.mjs";
 
 const genesis = {
   "solana:mainnet": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
   "solana:devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
 };
 
+export async function assertConnectionChain(connection,chain,localGenesis) {
+  const expected =
+    genesis[chain] ?? (chain === "solana:localnet" ? localGenesis : null);
+  if (!expected || (await connection.getGenesisHash()) !== expected)
+    throw Error("RPC chain mismatch");
+}
+
 // Public purchase/equipment builders only. Catalog administration, provider
 // fulfillment and QA signers do not belong in a holder's browser client.
-export function packPurchase(program, collection, buyer, ticket, epoch) {
+export function packPurchase(program, collection, buyer, ticket, epoch, expectedTotal) {
   if (
     !Number.isInteger(ticket) ||
     ticket < 0 ||
     ticket >= 32 ||
     !Number.isSafeInteger(epoch) ||
-    epoch < 0
+    epoch < 0 ||
+    !Number.isSafeInteger(expectedTotal) || expectedTotal <= 0
   )
     throw Error("Invalid pack ticket or epoch");
   const k = addresses(program, collection, epoch);
@@ -36,7 +44,7 @@ export function packPurchase(program, collection, buyer, ticket, epoch) {
       account(k.ops),
       account(SystemProgram.programId),
     ],
-    u16(ticket),
+    Buffer.concat([u16(ticket),u64(expectedTotal)]),
   );
 }
 
@@ -172,10 +180,7 @@ export async function sendWalletTransaction({
   localGenesis,
   additionalSigners = [],
 }) {
-  const expected =
-    genesis[chain] ?? (chain === "solana:localnet" ? localGenesis : null);
-  if (!expected || (await connection.getGenesisHash()) !== expected)
-    throw Error("RPC chain mismatch");
+  await assertConnectionChain(connection,chain,localGenesis);
   const feature = wallet.features["solana:signTransaction"];
   if (
     !wallet.chains.includes(chain) ||

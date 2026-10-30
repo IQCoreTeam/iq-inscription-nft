@@ -12,8 +12,8 @@ use solana_program::{
     system_instruction, system_program,
     sysvar::Sysvar,
 };
-pub const POOL_MAGIC: &[u8; 8] = b"NUBSALE4";
-pub const EPOCH_MAGIC: &[u8; 8] = b"NUBEPOC4";
+pub const POOL_MAGIC: &[u8; 8] = b"NUBSALE5";
+pub const EPOCH_MAGIC: &[u8; 8] = b"NUBEPOC5";
 pub const POOL_SIZE: usize = 4352;
 pub const EPOCH_SIZE: usize = 2048;
 pub const MAX_DEFS: usize = 16;
@@ -74,7 +74,7 @@ pub fn checked(
 }
 pub fn pool_checked(a: &AccountInfo, p: &Pubkey) -> Result<Vec<u8>, ProgramError> {
     let d = checked(a, p, POOL_MAGIC, POOL_SIZE)?;
-    if Pubkey::find_program_address(&[b"sale-v4", key(&d, 40).as_ref()], p).0 != *a.key {
+    if Pubkey::find_program_address(&[b"sale-v5", key(&d, 40).as_ref()], p).0 != *a.key {
         return Err(err(3));
     }
     Ok(d)
@@ -86,7 +86,7 @@ pub fn epoch_checked(
 ) -> Result<Vec<u8>, ProgramError> {
     let d = checked(a, p, EPOCH_MAGIC, EPOCH_SIZE)?;
     if key(&d, 8) != *pool.key
-        || Pubkey::find_program_address(&[b"epoch-v4", pool.key.as_ref(), &d[40..48]], p).0
+        || Pubkey::find_program_address(&[b"epoch-v5", pool.key.as_ref(), &d[40..48]], p).0
             != *a.key
     {
         return Err(err(3));

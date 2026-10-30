@@ -154,11 +154,13 @@ test("onchain rejection remains rejection after confirmation throws", async () =
   await assert.rejects(() => sendWalletTransaction(f), /Transaction failed/);
 });
 test("pack builder pins accounts and guard precedes settlement", () => {
-  const purchase = packPurchase(program, collection, payer.publicKey, 31, 0);
+  const purchase = packPurchase(program, collection, payer.publicKey, 31, 0, 105000000);
   assert.equal(purchase.data[0], 2);
+  assert.equal(purchase.data.readBigUInt64LE(3),105000000n);
+  assert.throws(()=>packPurchase(program,collection,payer.publicKey,0,0));
   assert(purchase.keys[1].pubkey.equals(addresses(program, collection).pool));
   assert.throws(() =>
-    packPurchase(program, collection, payer.publicKey, 32, 0),
+    packPurchase(program, collection, payer.publicKey, 32, 0, 105000000),
   );
   const settlement = [
     SystemProgram.transfer({

@@ -11,7 +11,8 @@ test("reader batches pool/loadout and coalesces in-flight reads until completion
     avatar = Keypair.generate().publicKey,
     k = addresses(program, collection);
   const pool = Buffer.alloc(4352);
-  pool.write("NUBSALE4");
+  pool.write("NUBSALE5");
+  pool.writeBigUInt64LE(100000000n,200);
   collection.toBuffer().copy(pool, 40);
   pool[209] = 4;
   const load = Buffer.alloc(312);

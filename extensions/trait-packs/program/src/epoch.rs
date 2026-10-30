@@ -1,4 +1,5 @@
 use crate::state::*;
+use crate::economics::{pack_charge, PLATFORM_TREASURY};
 use solana_program::{
     account_info::AccountInfo,
     clock::Clock,
@@ -102,8 +103,8 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
             let window = u64at(d, 8);
             let timeout = u64at(d, 16);
             let count = d[24] as usize;
-            if price == 0
-                || window == 0
+            pack_charge(price)?;
+            if window == 0
                 || timeout == 0
                 || count == 0
                 || count > MAX_DEFS
@@ -116,7 +117,7 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
                 payer,
                 pool,
                 system,
-                &[b"sale-v4", collection.key.as_ref()],
+                &[b"sale-v5", collection.key.as_ref()],
                 POOL_SIZE,
             )?;
             let mut data = pool.try_borrow_mut_data()?;
@@ -179,7 +180,7 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
                 payer,
                 epoch,
                 system,
-                &[b"epoch-v4", pool.key.as_ref(), &id.to_le_bytes()],
+                &[b"epoch-v5", pool.key.as_ref(), &id.to_le_bytes()],
                 EPOCH_SIZE,
             )?;
             let now = Clock::get()?.slot;
@@ -199,7 +200,7 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
             Ok(())
         }
         2 => {
-            if a.len() != 5 || d.len() != 2 {
+            if a.len() != 5 || d.len() != 10 {
                 return Err(err(2));
             }
             let buyer = &a[0];
@@ -232,7 +233,10 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
             if ops.lamports() < reserved_budget(outstanding)? {
                 return Err(err(8));
             }
-            let price = u64at(&pd, 200);
+            let price = pack_charge(u64at(&pd, 200))?.total;
+            if u64at(d, 2) != price {
+                return Err(err(8));
+            }
             let escrow = u64at(&ed, 69).checked_add(price).ok_or(err(8))?;
             invoke(
                 &system_instruction::transfer(buyer.key, epoch.key, price),
@@ -569,12 +573,12 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
             Ok(())
         }
         10 => {
-            if a.len() != 3 || !d.is_empty() {
+            if a.len() != 4 || !d.is_empty() {
                 return Err(err(2));
             }
             let pd = pool_checked(&a[0], p)?;
             let mut ed = epoch_checked(&a[1], &a[0], p)?;
-            if ed[48] != 4 || *a[2].key != key(&pd, 72) {
+            if ed[48] != 4 || *a[2].key != key(&pd, 72) || *a[3].key != PLATFORM_TREASURY {
                 return Err(err(5));
             }
             for n in 0..u16at(&ed, 65) as usize {
@@ -582,8 +586,19 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
                     return Err(err(5));
                 }
             }
-            let amount = u64at(&ed, 69);
-            transfer_owned(&a[1], &a[2], amount)?;
+            let tickets = u16at(&ed, 65) as u64;
+            let price = u64at(&pd, 200);
+            let charge = pack_charge(price)?;
+            let expected = charge.total.checked_mul(tickets).ok_or(err(8))?;
+            if u64at(&ed, 69) != expected {
+                return Err(err(8));
+            }
+            let creator_revenue = price.checked_mul(tickets).ok_or(err(8))?;
+            let platform_revenue = charge.platform_fee.checked_mul(tickets).ok_or(err(8))?;
+            transfer_owned(&a[1], &a[2], creator_revenue)?;
+            if platform_revenue > 0 {
+                transfer_owned(&a[1], &a[3], platform_revenue)?;
+            }
             put64(&mut ed, 69, 0);
             ed[48] = 6;
             a[1].try_borrow_mut_data()?.copy_from_slice(&ed);

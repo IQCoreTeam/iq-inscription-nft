@@ -2,6 +2,23 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { Buffer } from "buffer";
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
+
+export const PLATFORM_TREASURY = new PublicKey("EWNSTD8tikwqHMcRNuuNbZrnYJUiJdKq9UXLXSEU4wZ1");
+export const PLATFORM_FEE_BPS = 500;
+export const CLAIM_BUDGET_LAMPORTS = 12_000_000;
+export const PROVIDER_RESERVE_LAMPORTS = 100_000_000;
+
+// Exact amounts for V5 only. V4 pools used a different payment model and
+// deliberately fail this decoder rather than receiving an invented surcharge.
+export function packCharge(creatorPrice) {
+  if (!Number.isSafeInteger(creatorPrice) || creatorPrice <= 0)
+    throw Error("Pack creator price must be a positive exact lamport amount");
+  const fee = BigInt(creatorPrice) * BigInt(PLATFORM_FEE_BPS) / 10_000n;
+  const total = BigInt(creatorPrice) + fee;
+  if (total > BigInt(Number.MAX_SAFE_INTEGER))
+    throw Error("Pack payment exceeds the exact client amount range");
+  return { platformFee: Number(fee), totalPrice: Number(total) };
+}
 // UI uses exact JS numbers; reject values outside that representation instead
 // of rounding an on-chain price, balance or slot. A general SDK may retain BigInt.
 export function readU64Safe(data, offset) {
@@ -45,8 +62,8 @@ export const instruction = (
   });
 export function addresses(program, collection, epochId = 0) {
   const pda = (...seeds) => PublicKey.findProgramAddressSync(seeds, program)[0];
-  const pool = pda(Buffer.from("sale-v4"), collection.toBuffer()),
-    epoch = pda(Buffer.from("epoch-v4"), pool.toBuffer(), u64(epochId));
+  const pool = pda(Buffer.from("sale-v5"), collection.toBuffer()),
+    epoch = pda(Buffer.from("epoch-v5"), pool.toBuffer(), u64(epochId));
   return {
     pool,
     epoch,
@@ -59,8 +76,9 @@ export function addresses(program, collection, epochId = 0) {
 }
 export function readPool(data) {
   const d = Buffer.from(data);
-  if (d.length !== 4352 || d.subarray(0, 8).toString() !== "NUBSALE4")
+  if (d.length !== 4352 || d.subarray(0, 8).toString() !== "NUBSALE5")
     throw Error("Invalid paid pool.");
+  const price = readU64Safe(d, 200);
   return {
     authority: key(d, 8),
     collection: key(d, 40),
@@ -68,7 +86,8 @@ export function readPool(data) {
     provider: key(d, 104),
     providerTreasury: key(d, 136),
     catalogHash: d.subarray(168, 200).toString("hex"),
-    price: readU64Safe(d, 200),
+    price,
+    ...packCharge(price),
     definitionCount: d[208],
     pulls: d[209],
     window: readU64Safe(d, 210),
@@ -76,6 +95,8 @@ export function readPool(data) {
     epochCount: readU64Safe(d, 226),
     activeEpoch: readU64Safe(d, 234),
     outstandingTraits: readU64Safe(d, 242),
+    sealed: d[250] === 1,
+    retired: d[252] !== 0,
     definitions: Array.from({ length: d[208] }, (_, i) => {
       const o = 384 + i * 240;
       return {
@@ -94,7 +115,7 @@ export function readPool(data) {
 }
 export function readEpoch(data) {
   const d = Buffer.from(data);
-  if (d.length !== 2048 || d.subarray(0, 8).toString() !== "NUBEPOC4")
+  if (d.length !== 2048 || d.subarray(0, 8).toString() !== "NUBEPOC5")
     throw Error("Invalid paid epoch.");
   return {
     pool: key(d, 8),

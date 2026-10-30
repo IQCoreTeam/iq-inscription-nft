@@ -9,7 +9,7 @@ function draft(){
  return {program:key(),collection,nftProgram,registry:PublicKey.findProgramAddressSync([Buffer.from('registry'),collection.toBuffer()],nftProgram)[0],authority:key(),treasury:key(),provider:key(),providerTreasury:key(),price:30_000_000,window:100,timeout:100,definitions:Array.from({length:4},(_,id)=>({id,name:'Trait '+id,uri:'https://example.invalid/trait/'+id,hash:'12'.repeat(32),slot:id,bodyMask:1,supply:[40,24,12,4][id]}))};
 }
 function account(spec,appended,sealed=false){
- const data=Buffer.alloc(4352);data.write('NUBSALE4');
+ const data=Buffer.alloc(4352);data.write('NUBSALE5');
  for(const [field,offset] of [['authority',8],['collection',40],['treasury',72],['provider',104],['providerTreasury',136]])new PublicKey(spec[field]).toBuffer().copy(data,offset);
  const encoded=validateCatalog(spec.definitions);Buffer.from(sha256(encoded)).copy(data,168);data.writeBigUInt64LE(BigInt(spec.price),200);data[208]=spec.definitions.length;data[209]=4;data.writeBigUInt64LE(BigInt(spec.window),210);data.writeBigUInt64LE(BigInt(spec.timeout),218);data[250]=sealed?1:0;data[251]=appended;data[254]=1;spec.registry.toBuffer().copy(data,255);spec.nftProgram.toBuffer().copy(data,287);encoded.copy(data,384,0,appended*240);
  return {owner:spec.program,data};

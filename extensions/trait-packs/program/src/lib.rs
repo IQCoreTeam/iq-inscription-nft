@@ -1,6 +1,7 @@
 use solana_program::{
     account_info::AccountInfo, entrypoint, entrypoint::ProgramResult, pubkey::Pubkey,
 };
+pub mod economics;
 pub mod epoch;
 pub mod gear;
 pub mod state;
