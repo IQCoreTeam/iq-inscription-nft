@@ -12,3 +12,11 @@ This client contains holder operations, not fixture signers, program administrat
 `browser-entry.mjs` bundles without Node-only filesystem/crypto dependencies or absolute paths. Only supported APIs are exported. The sibling local test harness uses generated keys and synthetic SOL; it is excluded from the reusable client package. The hand-built disposable browser wallet is evidence for the signing boundary, not Phantom/mobile acceptance.
 
 The paired IQ metadata opt-in and V7 pack program are experimental local contracts. No mainnet deployment, external listing, publication or remote PR is authorized by this package. The original 6,900-item edition can launch separately.
+
+## V5 local follow-up
+
+`createPackClient` requires host-provided durable pending-purchase storage. It saves signed identity before broadcast and blocks another purchase until reconciliation sees a confirmed/failed chain result. The signed expected total includes the IQ surcharge. Quotes bind the explicit network and V5 account format.
+
+`mountPackWalletUI` mounts wallet/quote controls into an existing pack page using the host's Wallet Standard registry. It supports disconnect and disposes listeners. Production-page bootstrap and physical-wallet acceptance remain separate gates.
+
+`createIqMediaContext` uses the host's existing IQ SDK and browser wallet/burner signer. It reads JSON inscriptions via the pinned cached gateway, with bounded/coalesced reads. No private-key upload or table notify for unrelated Core transactions. The host still supplies explicit source-publication consent and durable publication checkpoints. The publisher verifies source/readback hashes.

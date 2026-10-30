@@ -17,11 +17,18 @@ Private, generated-key evidence: `/Users/nubs/Documents/ChatGPT/test/artifacts/i
 
 The creator must fund the program's operations PDA for Core trait-account rent before buyers can purchase; the chain and the sale quote both reject insufficient reserve. The buyer's escrow must never be borrowed to pay operations. A production relay would use the existing backend's operator identity for network/oracle expenses and later receive the fixed platform fee after delivery. Running that relay and funding its initial balance require the operator's agreement; the fee is gross revenue, not guaranteed profit. Actual provider fees, account rent and setup/network costs must be quoted before funding. Do not quietly subsidize this from a user's wallet or introduce a backend-held buyer key.
 
+## Additional local evidence
+
+- Chrome wallet component and allowlisted HTTP sale API: generated Surfpool wallet, 0.105 test-SOL purchase, confirmed receipt and disconnect. Not Phantom/mobile acceptance. The private QA signer route must never be published.
+- Durable purchase checkpoint before broadcast; unresolved signatures block retries. Operator payout recovery reloads its checkpoint and reconciles without a second payout. Lost-response and expired-unknown cases have unit tests.
+- IQ SDK media writing used a wallet signer interface without a secretKey field, synthetic JSON and exact cached readback. Repeated reads used one chain lookup. No public/private Nubbies media was uploaded.
+- Moderate npm advisories inherited through web3.js/Jayson/uuid remain documented. The advertised web3 fix is a major upgrade, so no blind breaking change was made.
+
 ## Still to finish
 
-1. Integrate this client into the app's existing wallet UI and production read/state API; remove the test-actor transport from that mode. Confirm with a real extension/device on the intended network.
-2. Reuse the existing NFT backend for bounded operator/index/state duties. Do not put a creator's or buyer's private key on that backend. Read ORAO's actual network treasury/fee configuration for each cluster, prepare resumable requests/claims/refunds, and test operational recovery before a public rollout.
-3. Connect validated reusable-media publication to the existing browser IQ signer/burner flow. The present Node publisher/context is a verified local host implementation, not permission to upload a user's keys to a server. Preserve read-back hashes, durable receipts, unknown-outcome recovery and explicit source-layer publication consent. Keep Nubbies source layers private until separately approved.
+1. Mount the tested wallet component and allowlisted sale API into the final app/backend bootstrap, including the existing page lifecycle and styling; remove the test-actor transport from that mode. Confirm with a real extension/device on the intended network.
+2. Connect the tested epoch-decision/recovery modules to the existing backend database lease/job lifecycle and production instruction/provider adapters. Do not put a creator's or buyer's private key on that backend. Read ORAO's actual network treasury/fee configuration for each cluster, prepare resumable requests/claims/refunds, and test operational recovery before a public rollout.
+3. Mount the tested wallet-signer media context in the creator page with the approved kit, explicit publication consent and durable checkpoints. The verified full-kit wallet-signer proof still runs in the local host harness, not permission to upload a user's keys to a server. Preserve read-back hashes, durable receipts, unknown-outcome recovery and explicit source-layer publication consent. Keep Nubbies source layers private until separately approved.
 4. Prepare exact cluster/program/authority/media manifests and live rent/funding estimates. The devnet IQ program currently requires upgrade authority `8QWrZjNNFzngKWCLCrFkAy7ydnagrBSVYdJFyEvw9agh` (read using `solana program show`, 2026-10-30). Deployment needs that authority or a clearly separate, approved test deployment; do not silently change IQ's official program.
 5. Final paired review, reproducible build/evidence package and approval before any PR/code/media update.
 

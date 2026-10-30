@@ -15,7 +15,7 @@ function saleFixture(){
   getAccountInfoAndContext:async key=>{reads++;assert(key.equals(keys.pool));return {context:{slot:1},value:{owner:program,data:pool}};},
   getMultipleAccountsInfoAndContext:async (queried,options)=>{reads++;assert(queried[0].equals(keys.epoch));assert(queried[1].equals(keys.ops));assert.equal(options.minContextSlot,1);return {context:{slot:2},value:[{owner:program,data:epoch},{owner:SystemProgram.programId,data:Buffer.alloc(0),lamports:1000000000}]};},
  };
- return {program,collection,pool,epoch,connection,get reads(){return reads;}};
+ return {program,collection,pool,epoch,connection,pendingPurchases:{load:async()=>null,save:async()=>{},clear:async()=>{}},get reads(){return reads;}};
 }
 test('sale quote batches mutable state, reuses warm reads and invalidates on demand',async()=>{
  const f=saleFixture(),reader=createWardrobeReader(f);
@@ -43,4 +43,12 @@ test('a wrong network cannot even display a sale quote',async()=>{
  const f=saleFixture();f.connection.getGenesisHash=async()=> 'wrong-chain';
  await assert.rejects(()=>createPackClient({...f,chain:'solana:devnet'}).readSale(),/chain mismatch/);
  assert.equal(f.reads,0);
+});
+
+test('durable unresolved purchase blocks signing until confirmed reconciliation',async()=>{
+ const f=saleFixture(),signature='saved-signature';let cleared=0;f.pendingPurchases={load:async()=>({signature}),save:async()=>{},clear:async(key,sig)=>{assert.equal(sig,signature);cleared++;}};
+ const client=createPackClient({...f,chain:'solana:devnet'}),account={address:Keypair.generate().publicKey.toBase58()};
+ await assert.rejects(()=>client.purchase({wallet:{},account,expectedTotal:105000000}),e=>e.signature===signature);
+ f.connection.getSignatureStatuses=async()=>({value:[null]});assert.equal((await client.reconcilePurchase(account)).state,'unresolved');assert.equal(cleared,0);
+ f.connection.getSignatureStatuses=async()=>({value:[{err:null,confirmationStatus:'confirmed'}]});assert.equal((await client.reconcilePurchase(account)).state,'confirmed');assert.equal(cleared,1);
 });

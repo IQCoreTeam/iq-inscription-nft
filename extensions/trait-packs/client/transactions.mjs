@@ -19,6 +19,7 @@ export async function assertConnectionChain(connection,chain,localGenesis) {
     genesis[chain] ?? (chain === "solana:localnet" ? localGenesis : null);
   if (!expected || (await connection.getGenesisHash()) !== expected)
     throw Error("RPC chain mismatch");
+  return expected;
 }
 
 // Public purchase/equipment builders only. Catalog administration, provider
@@ -179,6 +180,7 @@ export async function sendWalletTransaction({
   transaction,
   localGenesis,
   additionalSigners = [],
+  beforeSubmit,
 }) {
   await assertConnectionChain(connection,chain,localGenesis);
   const feature = wallet.features["solana:signTransaction"];
@@ -245,6 +247,7 @@ export async function sendWalletTransaction({
     throw Error(
       "Transaction simulation rejected: " + JSON.stringify(simulated.value.err),
     );
+  if(beforeSubmit)await beforeSubmit({signature:bs58.encode(expectedSignature),...validity});
   let signature;
   try {
     signature = await connection.sendRawTransaction(signed.serialize(), {

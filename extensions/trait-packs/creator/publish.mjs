@@ -28,7 +28,12 @@ export async function publishRenderKit(kit,assetRoot,context,checkpoint) {
     }else{
       checkpoint.pending={key,sha256:expected};await context.saveCheckpoint(checkpoint);
       // If this throws, pending stays set. Never silently repeat an ambiguous write.
-      sig=signature(await context.writeArtifact(bytes,name));checkpoint.pending.signature=sig;await context.saveCheckpoint(checkpoint);
+      try { sig=signature(await context.writeArtifact(bytes,name)); }
+      catch(error) {
+        if(error.signature){checkpoint.pending.signature=signature(error.signature);await context.saveCheckpoint(checkpoint);}
+        throw error;
+      }
+      checkpoint.pending.signature=sig;await context.saveCheckpoint(checkpoint);
     }
     const actual=await context.readArtifact(sig);if(hash(actual)!==expected)throw Error('Confirmed inscription bytes did not match');
     checkpoint.artifacts[key]={signature:sig,sha256:expected};delete checkpoint.pending;await context.saveCheckpoint(checkpoint);return sig;

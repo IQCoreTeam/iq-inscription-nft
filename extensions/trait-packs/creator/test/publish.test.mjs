@@ -28,3 +28,12 @@ test('known confirmed signature survives reader failure and resumes without re-s
 test('changed local files, draft contents or chain cannot reuse a publication checkpoint',async()=>{
  const f=await fixture();try{const checkpoint={};await publishRenderKit(f.kit,f.root,f.context,checkpoint);await assert.rejects(publishRenderKit({...f.kit,appearance:{...f.kit.appearance,title:'Other'}},f.root,f.context,checkpoint),/kit changed|Revalidate/);await assert.rejects(publishRenderKit(f.kit,f.root,{...f.context,expectedGenesis:'wrong'},checkpoint),/Wrong publication chain/);await writeFile(path.join(f.root,'hair-b.png'),'modified');await assert.rejects(publishRenderKit(f.kit,f.root,f.context,checkpoint),/Source image changed/);assert.equal(f.state.writes,6);}finally{await f.stop();}
 });
+test('a thrown writer receipt is persisted and recovered without duplicate inscription',async()=>{
+ const f=await fixture();try{
+  const original=f.context.writeArtifact;let lost=true;
+  f.context.writeArtifact=async(...args)=>{const signature=await original(...args);if(lost){lost=false;throw Object.assign(Error('confirmation unavailable'),{signature});}return signature;};
+  const checkpoint={};await assert.rejects(()=>publishRenderKit(f.kit,f.root,f.context,checkpoint),/confirmation unavailable/);
+  assert(checkpoint.pending.signature);assert.equal(f.state.writes,1);
+  await publishRenderKit(f.kit,f.root,f.context,checkpoint);assert.equal(f.state.writes,6);
+ }finally{await f.stop();}
+});
