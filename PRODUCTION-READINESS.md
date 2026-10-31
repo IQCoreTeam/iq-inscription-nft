@@ -1,6 +1,6 @@
 # Optional packs — local review candidate
 
-Unshipped follow-up to discussion draft #6. The production factories are mounted behind explicit host configuration; ordinary collections remain the default. This is a local technical-review candidate, not approval to deploy or publish private artwork.
+Optional follow-up to discussion draft #6. The production factories are mounted behind explicit host configuration; ordinary collections remain the default. This is a local technical-review candidate, not approval to deploy or publish private artwork.
 
 ## Implemented
 
@@ -46,4 +46,4 @@ Sharp is pinned to 0.35.5. Client dependencies retain four moderate web3/Jayson/
 
 Metaplex 0.11.2 emits a stack diagnostic for `registry_records_to_plugin_list`. The fresh offline build's linked-ELF check found that function absent and direct negative R10 displacements no larger than 4096 bytes; the same binary executes in the portable smoke and native lifecycle. Neither check is a general memory-safety audit or a claim that the upstream diagnostic is fixed.
 
-Baseline: backend main `98781d4bedffbef194ff0f144d65fdce1509068b`; published discussion draft #6 remains unchanged at `f04ddba`.
+Baseline: backend main `98781d4bedffbef194ff0f144d65fdce1509068b`; the original discussion commit `f04ddba` is preserved in #6's history.
