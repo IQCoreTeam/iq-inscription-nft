@@ -95,6 +95,8 @@ export function readPool(data) {
     epochCount: readU64Safe(d, 226),
     activeEpoch: readU64Safe(d, 234),
     outstandingTraits: readU64Safe(d, 242),
+    iqIntegration: d[254] === 1,
+    nftProgram: key(d,287),
     sealed: d[250] === 1,
     retired: d[252] !== 0,
     definitions: Array.from({ length: d[208] }, (_, i) => {
@@ -129,6 +131,7 @@ export function readEpoch(data) {
     seed: d.subarray(77, 109),
     entropy: d.subarray(109, 141),
     requested: !!d[141],
+    requestSponsor: key(d, 224),
     inventory: Array.from({ length: 16 }, (_, i) =>
       d.readUInt32LE(160 + i * 4),
     ),
@@ -233,4 +236,14 @@ export function encodeRequest(funding, nonce) {
   const n = Buffer.from(nonce);
   if (n.length !== 32) throw Error("Request nonce must be 32 bytes");
   return Buffer.concat([u64(funding), n]);
+}
+
+// A server may prepare terms, but only the host's pinned deployment determines
+// which programs the creator/holder wallet is allowed to authorize.
+export function assertPackDeployment(spec,deployment,expectedCollection){
+ if(!deployment?.program||!deployment?.nftProgram||!expectedCollection)throw Error('Verified pack deployment configuration is required');
+ if(!new PublicKey(spec.collection).equals(new PublicKey(expectedCollection)))throw Error('The setup collection changed');
+ for(const field of ['program','nftProgram',...(spec.provider?['provider','providerTreasury']:[])]){
+  if(!deployment[field]||!new PublicKey(spec[field]).equals(new PublicKey(deployment[field])))throw Error('The setup program or provider changed');
+ }
 }

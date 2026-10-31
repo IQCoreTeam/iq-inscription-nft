@@ -17,10 +17,12 @@ pub fn pack_charge(creator_price: u64) -> Result<PackCharge, ProgramError> {
     if creator_price == 0 {
         return Err(err(2));
     }
-    let platform_fee =
-        ((creator_price as u128 * PLATFORM_FEE_BPS as u128) / 10_000) as u64;
+    let platform_fee = ((creator_price as u128 * PLATFORM_FEE_BPS as u128) / 10_000) as u64;
     let total = creator_price.checked_add(platform_fee).ok_or(err(8))?;
-    Ok(PackCharge { platform_fee, total })
+    Ok(PackCharge {
+        platform_fee,
+        total,
+    })
 }
 
 #[cfg(test)]

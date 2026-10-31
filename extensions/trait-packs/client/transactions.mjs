@@ -181,7 +181,9 @@ export async function sendWalletTransaction({
   localGenesis,
   additionalSigners = [],
   beforeSubmit,
+  coSigners = [],
 }) {
+  const selectedAddress=selected.address;
   await assertConnectionChain(connection,chain,localGenesis);
   const feature = wallet.features["solana:signTransaction"];
   if (
@@ -192,9 +194,9 @@ export async function sendWalletTransaction({
   )
     throw Error("Wallet does not support this chain and transaction");
   const current = () =>
-    wallet.accounts.find(
+    selected.address===selectedAddress&&wallet.accounts.find(
       (a) =>
-        a.address === selected.address &&
+        a.address === selectedAddress &&
         a.chains.includes(chain) &&
         a.features.includes("solana:signTransaction"),
     );
@@ -226,9 +228,19 @@ export async function sendWalletTransaction({
   if (!current()) throw Error("Wallet account changed");
   if (!output?.signedTransaction)
     throw Error("Wallet returned no signed transaction");
-  const signed = Transaction.from(output.signedTransaction);
+  let signed = Transaction.from(output.signedTransaction);
   if (!signed.serializeMessage().equals(message))
     throw Error("Wallet changed the transaction message");
+  for(const participant of coSigners){
+    const other=participant.account,feature=participant.wallet.features['solana:signTransaction'];
+    if(other.address===selected.address)continue;
+    const current=()=>participant.wallet.accounts.some(account=>account.address===other.address&&account.chains.includes(chain)&&account.features.includes('solana:signTransaction'));
+    if(!participant.wallet.chains.includes(chain)||!current()||!feature?.supportedTransactionVersions.includes('legacy'))throw Error('Creator co-signer is not connected on this chain');
+    const [value]=await feature.signTransaction({account:other,chain,transaction:new Uint8Array(signed.serialize({requireAllSignatures:false,verifySignatures:false}))});
+    if(!current()||!value?.signedTransaction)throw Error('Creator co-signer changed');
+    signed=Transaction.from(value.signedTransaction);if(!signed.serializeMessage().equals(message))throw Error('Creator co-signer changed the transaction');
+  }
+  if(!current())throw Error('Wallet account changed');
   if (!signed.verifySignatures())
     throw Error("Transaction signatures are invalid or incomplete");
   const expectedSignature = signed.signature;
@@ -248,6 +260,7 @@ export async function sendWalletTransaction({
       "Transaction simulation rejected: " + JSON.stringify(simulated.value.err),
     );
   if(beforeSubmit)await beforeSubmit({signature:bs58.encode(expectedSignature),...validity});
+  if(!current())throw Error('Wallet account changed');
   let signature;
   try {
     signature = await connection.sendRawTransaction(signed.serialize(), {

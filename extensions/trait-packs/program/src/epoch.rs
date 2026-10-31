@@ -1,5 +1,5 @@
-use crate::state::*;
 use crate::economics::{pack_charge, PLATFORM_TREASURY};
+use crate::state::*;
 use solana_program::{
     account_info::AccountInfo,
     clock::Clock,
@@ -141,7 +141,7 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
             Ok(())
         }
         1 => {
-            if !(a.len() == 4 || a.len() == 5) || !d.is_empty() {
+            if !(a.len() == 4 || a.len() == 6) || !d.is_empty() {
                 return Err(err(2));
             }
             let payer = &a[0];
@@ -150,15 +150,29 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
             let system = &a[3];
             let mut pd = pool_checked(pool, p)?;
             let id = u64at(&pd, 226);
+            if id == 0 && a.len() != 4 {
+                return Err(err(2));
+            }
             if pd[250] != 1 || pd[252] != 0 {
                 return Err(err(5));
             }
             if id > 0 {
-                if a.len() != 5 {
+                if a.len() != 6 {
                     return Err(err(5));
                 }
                 let old = epoch_checked(&a[4], pool, p)?;
-                if u64at(&old, 40) != id - 1 || ![4, 5, 6].contains(&old[48]) {
+                if u64at(&old, 40) != id - 1 || ![5, 6].contains(&old[48]) {
+                    return Err(err(5));
+                }
+                // Do not strand sponsor surplus in an old epoch. The operator
+                // may compose the fixed-recipient sweep and open atomically.
+                let (requester, _) = requester_address(&a[4], p);
+                if *a[5].key != requester
+                    || *a[5].owner != system_program::id()
+                    || !a[5].data_is_empty()
+                    || a[5].executable
+                    || old[141] == 1 && a[5].lamports() != 0
+                {
                     return Err(err(5));
                 }
                 if old[48] == 5 {

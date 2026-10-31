@@ -9,7 +9,7 @@
     "@noble/hashes": "1.8.0",
     "@solana/web3.js": "1.99.0",
     "buffer": "6.0.3",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "bs58": "6.0.0"
   }
 }

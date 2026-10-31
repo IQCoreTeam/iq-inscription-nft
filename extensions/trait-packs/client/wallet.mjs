@@ -1,4 +1,6 @@
-// Discovery registry comes from the app's existing @wallet-standard/app instance.
+import {PublicKey} from '@solana/web3.js';
+import nacl from 'tweetnacl';
+// Share the app's @wallet-standard/app singleton across creator and packs.
 // Do not create another registry or inject a Phantom-specific global fallback.
 export function compatibleWallets(registry, chain) {
   return registry
@@ -69,4 +71,18 @@ export function createWalletSession(wallet, chain, onChange) {
       off();
     },
   };
+}
+
+// Both creator login and sale-window intent require the same exact-message and
+// current-account checks. This signs a message only, never a transaction.
+export async function signWalletMessage({wallet,account,chain,message}) {
+  const address=account.address;
+  const current=()=>{
+    if(account.address!==address||!account.chains.includes(chain)||!account.features.includes('solana:signMessage')||!wallet.accounts.some(a=>a.address===account.address&&a.chains.includes(chain))||new PublicKey(account.publicKey).toBase58()!==account.address)throw Error('Wallet changed before message approval');
+  };
+  current();const feature=wallet.features['solana:signMessage'];
+  if(!feature?.signMessage)throw Error('This wallet needs message signing');
+  const bytes=new TextEncoder().encode(message),results=await feature.signMessage({account,message:bytes});current();const value=results?.[0];
+  if(results?.length!==1||!value||!(value.signedMessage instanceof Uint8Array)||value.signedMessage.length!==bytes.length||value.signedMessage.some((v,i)=>v!==bytes[i])||!(value.signature instanceof Uint8Array)||value.signature.length!==64||!nacl.sign.detached.verify(bytes,value.signature,account.publicKey))throw Error('Wallet returned a different message approval');
+  return value.signature;
 }

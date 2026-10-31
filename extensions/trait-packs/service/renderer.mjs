@@ -1,4 +1,4 @@
-// Private final-edition renderer: on-chain gear IDs select existing Nubbies layers.
+// Verified shared-layer renderer: on-chain gear IDs select reviewed collection layers.
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
@@ -7,7 +7,7 @@ import {renderCollection,resolveAssetPath} from './render-engine.mjs';
 import {selectFinalArt,singleFinalArtConfig} from './final-art-selection.mjs';
 
 export async function createCuratedRenderer(artRoot){
- if(!artRoot)throw Error('A verified private render-kit root is required');
+ if(!artRoot)throw Error('A verified render-kit root is required');
  const config=JSON.parse(await readFile(path.join(artRoot,'config.json'),'utf8'));
  const edition=JSON.parse(await readFile(path.join(artRoot,'edition.json'),'utf8'));
  const proposal=JSON.parse(await readFile(path.join(artRoot,'catalog.json'),'utf8'));
@@ -19,7 +19,7 @@ export async function createCuratedRenderer(artRoot){
  async function image(avatar){
   if(!avatar.originalBasePreserved)throw Error('Base NFT identity changed; outfit render paused');
   const id=avatar.sourceEditionId,base=edition.items[id-1];
-  if(!base)throw Error('Unknown Nubbies edition');
+  if(!base)throw Error('Unknown collection item');
   if(!Array.isArray(avatar.definitions)||avatar.definitions.length!==6)throw Error('Incomplete on-chain loadout');
   const key=avatar.address+':'+avatar.revision+':'+id+':'+avatar.definitions.join(',');
   if(cache.has(key))return cache.get(key);
