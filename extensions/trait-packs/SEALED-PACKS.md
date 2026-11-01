@@ -1,7 +1,7 @@
-# Transferable sealed packs — local candidate
+# Transferable sealed packs — optional draft
 
-This is a separate local branch, not an update to public PR #6 or frontend #15.
-It has not been deployed to devnet/mainnet, published or externally reviewed.
+This optional extension is proposed in backend PR #6 and paired frontend PR #15.
+It has not been deployed to devnet/mainnet or independently reviewed.
 
 ## Behavior
 
@@ -38,8 +38,8 @@ Standalone protocol preview: http://127.0.0.1:4590/ . Test accounts are Collecto
 
 ## Remaining acceptance
 
-- Browser desktop/mobile review and screenshots when local browser control is enabled.
-- The paired local frontend now includes the actual creator opt-in, packs page, Wallet Standard sender and persistent receipt index. This mounting is covered by DOM/HTTP/Surfpool tests; visual browser acceptance is still pending, and physical wallets/public indexing have not been accepted.
+- Desktop/mobile source-page checks and screenshots have been captured locally; physical-wallet acceptance remains separate.
+- The paired local frontend now includes the actual creator opt-in, packs page, Wallet Standard sender and persistent receipt index. This mounting is covered by DOM/HTTP/Surfpool tests; local browser review is complete, while physical wallets/public indexing have not been accepted.
 - Review the escrow-until-open policy, operations capital, permanent pack media, recovery economics and public upgrade authority before any release.
 - Multiple separate releases for one existing collection remain a future pool-versioning change; this prototype supports one fresh sealed pool/release per collection.
 - Public oracle and marketplace ingestion/device acceptance are outside local Surfpool proof. No outcome/rareness/value guarantee is made.
