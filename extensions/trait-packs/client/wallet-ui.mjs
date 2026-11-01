@@ -2,10 +2,21 @@ import { compatibleWallets, createWalletSession } from "./wallet.mjs";
 
 // Mount inside the existing pack page. Registry/client are the host's existing
 // instances. This mode contains no test actors or server-side buyer signing.
-export function mountPackWalletUI(root, { registry, client, chain, requestWindow }) {
+export function mountPackWalletUI(root, { registry, client, chain, requestWindow, purchaseRoot = root }) {
   const document = root.ownerDocument;
-  const select = document.createElement("select");
-  select.setAttribute("aria-label", "Wallet");
+  const dialog = document.createElement("dialog");
+  dialog.className = "pack-wallet-dialog";
+  dialog.setAttribute("aria-label", "Connect wallet");
+  const heading = document.createElement("h2");
+  heading.textContent = "Connect wallet";
+  const choices = document.createElement("div");
+  choices.className = "wallet-options";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.className = "text-button";
+  cancel.addEventListener("click", () => dialog.close(""));
+  dialog.append(heading, choices, cancel);
   const connect = document.createElement("button");
   connect.textContent = "Connect wallet";
   connect.type = "button";
@@ -18,29 +29,27 @@ export function mountPackWalletUI(root, { registry, client, chain, requestWindow
   const buy = document.createElement("button");
   buy.textContent = "Buy pack";
   buy.type = "button";
-  const nextWindow = document.createElement("button");
-  nextWindow.textContent = "Request sale window";
-  nextWindow.type = "button";
   const quote = document.createElement("p"),
     status = document.createElement("p");
   status.setAttribute("role", "status");
-  root.replaceChildren(
-    select,
-    connect,
-    disconnect,
-    quote,
-    buy,
-    refresh,
-    nextWindow,
-    status,
-  );
+  const address = document.createElement("span"); address.className = "wallet-address";
+  buy.className = "primary-button"; refresh.className = "text-button";
+  connect.className = "quiet-button"; disconnect.className = "text-button";
+  quote.className = "checkout-price"; status.className = "checkout-status";
+  const fees = document.createElement("small"); fees.className = "checkout-fees";
+  const pricing = document.createElement("div"); pricing.className = "checkout-main"; pricing.append(quote, buy);
+  root.replaceChildren(connect, address, disconnect, dialog);
+  const checkout = document.createElement("div"); checkout.className = "pack-checkout";
+  checkout.append(pricing, fees, refresh, status);
+  if (purchaseRoot === root) root.append(checkout); else purchaseRoot.replaceChildren(checkout);
   let wallets = [],
     session = null,
     wallet = null,
     sale = null,
     busy = false,
     disposed = false,
-    unresolved = null;
+    unresolved = null,
+    purchaseStep = null;
   const sol = (n) => {
     const value = BigInt(n),
       fraction = (value % 1000000000n)
@@ -53,36 +62,37 @@ export function mountPackWalletUI(root, { registry, client, chain, requestWindow
     root.dispatchEvent(
       new document.defaultView.CustomEvent(name, { bubbles: true, detail }),
     );
+  function canPrepare() {
+    return !!requestWindow && [5,6].includes(sale?.epoch?.status) &&
+      (sale.pool.definitions ?? []).reduce((sum,row)=>sum+row.remaining,0)>=4;
+  }
   function render() {
+    address.hidden = !session?.account;
+    address.textContent = session?.account ? session.account.address.slice(0, 4) + "…" + session.account.address.slice(-4) : "";
     connect.hidden = !!session?.account;
     disconnect.hidden = !session?.account;
     connect.disabled = busy || !wallets.length;
     disconnect.disabled = busy || !session?.account;
-    select.disabled = busy;
+
     refresh.disabled = busy;
-    nextWindow.hidden = !requestWindow || !session?.account || !sale || ![5,6].includes(sale.epoch?.status) || (sale.pool.definitions??[]).reduce((sum,row)=>sum+row.remaining,0)<4;
-    nextWindow.disabled = busy || !wallet?.features["solana:signMessage"] || !session?.account?.features.includes("solana:signMessage");
-    nextWindow.title = nextWindow.disabled && !busy ? "This wallet needs message signing to request an operator window" : "Sign a window request; this does not buy a pack";
-    buy.disabled =
-      busy || !!unresolved || !session?.account || !sale?.canPurchase;
-    quote.textContent = sale
-      ? `Creator ${sol(sale.pool.price)} SOL + IQ ${sol(sale.pool.platformFee)} SOL = ${sol(sale.pool.totalPrice)} SOL. Network fees are additional.`
-      : "Price not loaded.";
+    buy.textContent = purchaseStep ?? "Buy pack";
+    buy.disabled = busy || !!unresolved || !session?.account ||
+      !(sale?.canPurchase || canPrepare() && wallet?.features["solana:signMessage"] && session.account.features.includes("solana:signMessage"));
+    quote.textContent = sale ? sol(sale.pool.totalPrice) + " SOL" : "Loading price…";
+    fees.textContent = sale ? "Includes " + sol(sale.pool.platformFee) + " SOL IQ fee · network fees extra" : "";
+    quote.title = sale ? "Creator " + sol(sale.pool.price) + " SOL + IQ " + sol(sale.pool.platformFee) + " SOL" : "";
+    if (purchaseRoot !== root) status.hidden = !purchaseStep && status.dataset.kind !== "error";
+
   }
   function discover() {
-    const selected = select.value;
     wallets = compatibleWallets(registry, chain);
-    select.replaceChildren(
-      ...wallets.map((value, index) => {
-        const option = document.createElement("option");
-        option.value = String(index);
-        option.textContent = value.name;
-        return option;
-      }),
-    );
-    if (wallet && wallets.includes(wallet))
-      select.value = String(wallets.indexOf(wallet));
-    else if (selected !== "" && wallets[Number(selected)]) select.value = selected;
+    choices.replaceChildren(...wallets.map((value, index) => {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.textContent = value.name;
+      option.addEventListener("click", () => dialog.close(String(index)));
+      return option;
+    }));
     if (wallet && !wallets.includes(wallet)) {
       session?.dispose();
       session = null;
@@ -95,10 +105,12 @@ export function mountPackWalletUI(root, { registry, client, chain, requestWindow
   async function run(operation) {
     if (busy || disposed) return;
     busy = true;
+    status.dataset.kind = "";
     render();
     try {
       await operation();
     } catch (error) {
+      status.dataset.kind = "error";
       if (error.signature) unresolved = error.signature;
       if (!disposed)
         status.textContent = error.signature
@@ -106,14 +118,26 @@ export function mountPackWalletUI(root, { registry, client, chain, requestWindow
           : error.message;
     } finally {
       busy = false;
+      purchaseStep = null;
       if (!disposed) render();
     }
   }
   connect.addEventListener("click", () =>
     run(async () => {
+      let selected = wallets[0];
+      if (wallets.length > 1) {
+        const chosen = await new Promise(resolve => {
+          dialog.returnValue = "";
+          dialog.addEventListener("close", () => resolve(dialog.returnValue), { once: true });
+          dialog.showModal();
+        });
+        if (chosen === "" || disposed) return;
+        selected = wallets[Number(chosen)];
+      }
+      if (!selected || !compatibleWallets(registry, chain).includes(selected))
+        throw Error("Wallet is unavailable. Connect again.");
       session?.dispose();
-      wallet = wallets[Number(select.value)];
-      if (!wallet) throw Error("Choose an available wallet");
+      wallet = selected;
       session = createWalletSession(wallet, chain, (account) => {
         emit("iqpacks:wallet", { wallet, account });
         status.textContent = account
@@ -133,15 +157,7 @@ export function mountPackWalletUI(root, { registry, client, chain, requestWindow
       await session?.disconnect();
     }),
   );
-  select.addEventListener("change", () => {
-    session?.dispose();
-    session = null;
-    wallet = null;
-    emit("iqpacks:wallet", { wallet: null, account: null });
-    render();
-  });
-  refresh.addEventListener("click", () =>
-    run(async () => {
+  const refreshSale = () => run(async () => {
       client.invalidate();
       sale = null;
       if (session?.account) {
@@ -155,28 +171,49 @@ export function mountPackWalletUI(root, { registry, client, chain, requestWindow
         : sale.canPurchase
           ? "Price refreshed."
           : "Sale is not currently available.";
-    }),
-  );
+    });
+  refresh.addEventListener("click", refreshSale);
+  root.addEventListener("iqpacks:refresh-sale", refreshSale);
   buy.addEventListener("click", () =>
     run(async () => {
       const current = session?.account;
       if (!current || !sale)
         throw Error("Connect a wallet and review the price");
+      const selectedWallet = wallet, reviewedTotal = sale.pool.totalPrice, address = current.address;
+      const assertCurrent = () => {
+        if (disposed || wallet !== selectedWallet || session?.account?.address !== address ||
+            !selectedWallet.accounts.some(account=>account.address===address && account.chains.includes(chain)))
+          throw Error("Wallet changed. Review the price and try again.");
+        if (BigInt(sale.pool.totalPrice) !== BigInt(reviewedTotal))
+          throw Error("The price changed. Review the new total before buying.");
+      };
+      client.invalidate();sale=await client.readSale();assertCurrent();
+      if (!sale.canPurchase && canPrepare()) {
+        purchaseStep="Preparing…";
+        status.textContent="Approve a message to prepare the sale. No payment yet.";
+        render();
+        await requestWindow(selectedWallet,current);assertCurrent();
+        status.textContent="Preparing your purchase…";render();
+        for(let attempt=0;attempt<15;attempt++) {
+          client.invalidate();sale=await client.readSale();assertCurrent();
+          if(sale.canPurchase)break;
+          await new Promise(resolve=>document.defaultView.setTimeout(resolve,2000));
+          assertCurrent();
+        }
+      }
+      if (!sale.canPurchase) throw Error("The sale is not ready yet. Nothing was charged. Try again shortly.");
+      assertCurrent();purchaseStep="Confirm payment";
+      status.textContent="Confirm the pack payment in your wallet.";render();
       const result = await client.purchase({
-        wallet,
+        wallet: selectedWallet,
         account: current,
-        expectedTotal: sale.pool.totalPrice,
+        expectedTotal: reviewedTotal,
       });
-      status.textContent = `Purchase confirmed: ${result.signature}. Rewards appear after settlement.`;
+      status.textContent = "Purchase confirmed. Preparing your pack…";
       emit("iqpacks:purchase", result);
       sale = await client.readSale();
     }),
   );
-  nextWindow.addEventListener("click",()=>run(async()=>{
-    await requestWindow(wallet,session.account);
-    client.invalidate();sale=await client.readSale();
-    status.textContent="Sale window requested. Refresh the price before buying.";
-  }));
   const off = [
     registry.on("register", discover),
     registry.on("unregister", discover),
@@ -187,8 +224,11 @@ export function mountPackWalletUI(root, { registry, client, chain, requestWindow
   });
   return () => {
     disposed = true;
+    root.removeEventListener("iqpacks:refresh-sale", refreshSale);
+    if (dialog.open) dialog.close("");
     session?.dispose();
     for (const dispose of off) dispose();
     root.replaceChildren();
+    if (purchaseRoot !== root) purchaseRoot.replaceChildren();
   };
 }

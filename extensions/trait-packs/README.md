@@ -26,3 +26,24 @@ Evidence from the private integration lab covers real Surfpool IQ/Core/provider 
 Before production: agree on program ownership/upgrades, venue-specific order/delegate/royalty handling, permanent artwork/recipe publication and HTTP hosting, personal/mobile-wallet acceptance, and final price/odds/schedule. A buyer must compose the outfit assertion with the intended settlement instructions. Arbitrary third-party venue buys do not automatically gain this guarantee. The generic direct-trade payment helper does not enforce royalties on external marketplaces.
 
 Nubbies' 6,900-item static edition is private and can launch without this extension. Only 16 optional wearable definitions were exercised; two authored portraits remain unenrolled because they have no interchangeable layer recipes.
+
+### Later pack releases (future work, not implemented)
+
+The current `sale-v5` PDA is derived from the collection alone. Its catalog is
+sealed before sales. Reopening epochs sells the remaining stock; it does not
+create a new release or add new traits. Do not present a frontend-only “new
+release” control over this ABI.
+
+A future version should keep the collection as the stable identity and give
+each release a separate pool keyed by collection + release ID, with its own
+immutable catalog/media commitment, inventory, price, odds and sales history.
+Old purchases must continue resolving against their original pool. Discovery
+should paginate releases for a collection, and outfit compatibility must verify
+the collection and approved release pool rather than assume one pool address.
+
+This requires coordinated program, IQ holder-consent/wardrobe verification,
+client, operator and indexer changes; existing `sale-v5` pools need an explicit
+legacy path. Before production launch, either implement and test that version
+or explicitly accept this version's single-release limitation. A program
+upgrade or new deployment cannot silently grant existing NFTs new delegates.
+No upgrade compatibility or automatic migration is promised by this draft.
