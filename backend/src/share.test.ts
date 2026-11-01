@@ -29,7 +29,7 @@ test('share HTML has distinct launchpad, collection, and asset cards without RPC
     expect(home.headers.get('content-type')).toContain('text/html');
     expect(home.headers.get('cache-control')).toBe('public, max-age=60');
     const homeHtml = await home.text();
-    expect(homeHtml).toContain('<title>IQ6900 NFT Launchpad</title>');
+    expect(homeHtml).toContain('<title>IQ Labs NFT Launchpad</title>');
     expect(homeHtml).toContain('href="https://iqlabs.dev/?menu=nft"');
     expect(homeHtml).not.toContain('property="og:image"');
     expect(calls).toEqual([]);

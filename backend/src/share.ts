@@ -44,7 +44,7 @@ ${image ? meta('og:image', image, true) + meta('twitter:image', image) + meta('o
   // No collection listing on the launchpad preview, and no invented cover art.
   app.get('/', (c) => {
     c.header('Cache-Control', 'public, max-age=60');
-    return c.html(html('IQ6900 NFT Launchpad', 'Inscription NFTs on Solana.', frontend({})));
+    return c.html(html('IQ Labs NFT Launchpad', 'Inscription NFTs on Solana.', frontend({})));
   });
   app.get('/c/:slug', (c) => {
     const collection = data.getCollection(c.req.param('slug'));
