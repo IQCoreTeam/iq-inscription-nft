@@ -91,7 +91,7 @@ export const config = {
   irysDevnet: net.irysDevnet,
   arweaveGateway: net.arweaveGateway,
 
-  maxOpenReservationsPerWallet: Number(env("MAX_OPEN_RESERVATIONS_PER_WALLET", "3")),
+  maxOpenReservationsPerWallet: Number(env("MAX_OPEN_RESERVATIONS_PER_WALLET", "10")),
   reservePerIpPerMinute: Number(env("RESERVE_PER_IP_PER_MINUTE", "10")),
 
   // Creator deploy fee, paid by the creator to the platform treasury inside the

@@ -9,9 +9,10 @@ import { PublicKey, Connection } from "@solana/web3.js";
 import { config } from "./config.ts";
 import { rarityOf } from "./rarity.ts";
 import { db, nowSec } from "./db.ts";
-import { getCollection, getItem, listCollections, mintedIndices, publicView } from "./collections.ts";
+import { getCollection, getItem, heldBy, listCollections, mintedIndices, publicView } from "./collections.ts";
 import { reserve, ReserveError } from "./allocator.ts";
-import { getReservation, markAwaitingSubmit, markCancelled, markRejected, touchReservation } from "./reservations.ts";
+import { getReservation, markAwaitingSubmit, markCancelled, markLanded, markRejected, touchReservation } from "./reservations.ts";
+import { fetchRegistry, isMinted } from "./program.ts";
 import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
@@ -76,7 +77,7 @@ app.get("/c/:slug/items", (c) => {
   const col = getCollection(c.req.param("slug"));
   if (!col) return c.json({ error: "not found" }, 404);
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
-  const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 60) || 60), 200);
+  const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 60) || 60), 500);
   const rows = db
     .query<{ item_index: number; name: string; arweave_id: string; image_mime: string }, [string, number, number]>(
       "SELECT item_index, name, arweave_id, image_mime FROM item WHERE slug = ? ORDER BY item_index LIMIT ? OFFSET ?"
@@ -195,6 +196,38 @@ app.post("/c/:slug/mint", async (c) => {
   const co = await coSignRegisterItem(col, item, r, inscriptionSig, metaSig, asset);
   console.log(`${tag} path=first verify=${Date.now() - tv}ms total=${Date.now() - t0}ms`);
   return c.json({ ...co, index: r.item_index });
+});
+
+// The client reports that its register tx landed. The registry bitmap is the
+// truth: if the index is sold, the reservation is confirmed and its slot
+// mirrored right away (grid, My NFTs, the wallet's open-reservation count)
+// instead of at the next reconcile. 202 = not visible yet, call again.
+app.post("/c/:slug/mint/landed", async (c) => {
+  const col = getCollection(c.req.param("slug"));
+  if (!col) return c.json({ error: "not found" }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  const r = typeof body?.reservationId === "string" ? getReservation(body.reservationId) : null;
+  if (!r || r.slug !== col.slug) return c.json({ error: "reservation not found" }, 404);
+  if (r.state === "confirmed") return c.json({ status: "confirmed", index: r.item_index, asset: r.asset });
+  if (r.state !== "awaiting_submit") return c.json({ error: `reservation is ${r.state}` }, 409);
+  let bitmap: Uint8Array;
+  try { bitmap = (await fetchRegistry(new PublicKey(col.registry))).bitmap; }
+  catch { return c.json({ error: "registry unavailable, retry" }, 503); }
+  if (!isMinted(bitmap, r.item_index)) return c.json({ status: "pending", index: r.item_index }, 202);
+  markLanded(r);
+  console.log(`[landed] ${col.slug} #${r.item_index} resv=${r.id.slice(0, 8)}`);
+  return c.json({ status: "confirmed", index: r.item_index, asset: r.asset });
+});
+
+// Every minted item a wallet holds, across collections (My NFTs).
+app.get("/owner/:wallet", (c) => {
+  const wallet = c.req.param("wallet");
+  if (!isPubkey(wallet)) return c.json({ error: "wallet must be a base58 pubkey" }, 400);
+  const items = heldBy(wallet).map((r) => {
+    const rr = rarityOf(r.slug)?.get(r.item_index);
+    return { slug: r.slug, collectionName: r.col_name, index: r.item_index, name: r.name, asset: r.asset, inscriptionSig: r.inscription_sig, registeredAt: r.registered_at, rarity: rr ? { rank: rr.rank, tier: rr.tier } : null };
+  });
+  return c.json({ items });
 });
 
 // Single NFT from the user's own inscription into the global collection.

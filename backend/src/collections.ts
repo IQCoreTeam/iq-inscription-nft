@@ -56,6 +56,18 @@ export function upsertSlot(slug: string, s: OnChainSlot): void {
   if (isNew) bumpMintStmt.run(slug, seenAt);
 }
 
+// Every minted item a wallet holds, across collections, newest first. From the
+// registry mirror: the public RPC has no DAS, so the page cannot ask the chain
+// by owner, and scanning each collection's item pages does not scale.
+const heldByStmt = db.query<{ slug: string; col_name: string; item_index: number; name: string; asset: string; inscription_sig: string; registered_at: number }, [string]>(
+  `SELECT s.slug, c.name AS col_name, s.item_index, i.name, s.asset, s.inscription_sig, s.registered_at
+     FROM slot s JOIN item i ON i.slug = s.slug AND i.item_index = s.item_index JOIN collection c ON c.slug = s.slug
+    WHERE s.owner = ? ORDER BY s.registered_at DESC, s.item_index DESC`
+);
+export function heldBy(wallet: string) {
+  return heldByStmt.all(wallet);
+}
+
 export function ownersOf(slug: string): number {
   return ownersStmt.get(slug)?.n ?? 0;
 }

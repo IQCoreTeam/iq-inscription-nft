@@ -5,6 +5,7 @@
 
 import { db, nowSec, type ReservationRow } from "./db.ts";
 import { config } from "./config.ts";
+import { upsertSlot } from "./collections.ts";
 
 const byId = db.query<ReservationRow, [string]>("SELECT * FROM reservation WHERE id = ?");
 const returnToPoolStmt = db.query("INSERT OR IGNORE INTO returned (slug, item_index, returned_at) VALUES (?1, ?2, ?3)");
@@ -27,6 +28,16 @@ export function markAwaitingSubmit(id: string, inscriptionSig: string, metaSig: 
 
 export function markConfirmed(id: string): void {
   toConfirmed.run(id);
+}
+
+// The register tx landed (the registry bit for the index is set): confirm the
+// reservation and mirror its slot now, so the grid, My NFTs and the wallet's
+// open-reservation count reflect the mint without waiting for the reconciler
+// (which later overwrites the row with what the chain says).
+export function markLanded(r: ReservationRow): void {
+  toConfirmed.run(r.id);
+  if (r.asset && r.inscription_sig && r.meta_sig)
+    upsertSlot(r.slug, { index: r.item_index, owner: r.wallet, asset: r.asset, inscriptionSig: r.inscription_sig, metaSig: r.meta_sig, registeredAt: nowSec() });
 }
 
 function releaseToPool(setState: typeof toExpired, r: ReservationRow): void {
