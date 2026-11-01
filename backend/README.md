@@ -221,3 +221,46 @@ The program id comes from `../target/idl/iq_inscription_nft.json`. Copy `.env.ex
 | `scripts/deploy-collection.ts` | stand a collection up from a folder (or `--single`) |
 | `scripts/mint-e2e.ts` | the full mint against a running cluster, 12 checks |
 | `scripts/rules-e2e.ts` | its own 6-item collection with a 25 s TTL: allowlist, deposit mistakes, sequential, cancel, touch, expiry through the reaper, a multi-chunk image, per-wallet limit, open-reservation cap, mint window, read routes, the single-NFT route (12 checks) |
+
+## Optional cached HTML share cards
+
+`GET /share`, `GET /share/c/:slug`, and `GET /share/asset/:address` return
+small HTML pages with Open Graph and Twitter metadata, a safe browser redirect
+to the existing frontend, and a visible link when JavaScript is unavailable.
+Every user agent receives the same HTML. Unknown collection slugs and unmirrored assets return
+404. These handlers read only the local registry mirror; they do not reconcile,
+call RPC, inspect wallets, fetch remote images, or load rarity/market data.
+Successful responses permit a 60-second public cache.
+
+The canonical/frontend links are `SITE_BASE/?menu=nft`,
+`SITE_BASE/?menu=nft&nft=<slug>`, and
+`SITE_BASE/?menu=nft&asset=<address>` (an existing configured path is preserved).
+The media host comes from the existing `CLUSTER` network preset. Collection
+cards use a known logo inscription or the latest mirrored minted inscription;
+asset cards use that asset's mirrored inscription. Images use
+`/render/<signature>?v=media-3`. Without a valid known inscription, the card is
+text-only; no branding image or unminted artwork is guessed.
+
+Set `SITE_BASE` to the actual frontend deployment for this backend. A devnet
+backend must point to a frontend configured for devnet: the current frontend
+chooses its NFT network through `nft_net.js` / localStorage, not a public URL
+query parameter. These pages label the backend cluster and do not switch the
+client network.
+
+These are dedicated backend share URLs. They do **not** add server-rendered
+metadata to existing `iqlabs.dev/?menu=nft...` links, and deploying them alone
+will not change cards for those URLs. That requires a separate frontend-host
+integration. A later frontend change can build share links from its existing
+network preset's API base: `/share` for the launchpad, `/share/c/` plus an
+encoded slug for a collection, or `/share/asset/` plus an encoded asset address.
+Keep navigation links pointing at the actual UI and use these dedicated URLs
+only for explicit sharing. Do not derive the backend origin from query input.
+
+`GET /health` advertises `shareCards: true` for this implementation. The paired
+frontend only exposes Share after one cached capability read confirms this
+flag, so shipping the frontend before the backend keeps the controls hidden.
+Share uses the native share sheet when supported, otherwise clipboard copy;
+it does not prompt for a wallet. Unmirrored chain-only assets and the
+single-inscription mint form have no cached share card and stay hidden.
+
+Focused handler verification: `bun test backend/src/share.test.ts`.
