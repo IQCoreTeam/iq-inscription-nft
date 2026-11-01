@@ -4,7 +4,7 @@ import {
   readSealedRelease,
   readSealedPack,
 } from "../client/sealed.mjs";
-import { readPool } from "../client/protocol.mjs";
+import { readPool, readEpoch, addresses } from "../client/protocol.mjs";
 
 // Confirmed on-chain receipts are the authority. SQLite is only a bounded,
 // restart-safe discovery index populated after writes, never an ownership ledger.
@@ -136,6 +136,37 @@ export function createSealedPackIndex({
         r.rows.filter((x) => !x.opened).map((x) => x.asset),
         { minContextSlot: r.slot },
       );
+      const epochIds = [
+        ...new Set(
+          r.rows.filter((row) => row.opened).map((row) => Number(row.epoch)),
+        ),
+      ];
+      const epochs = new Map();
+      if (epochIds.length) {
+        const checked = await connection.getMultipleAccountsInfoAndContext(
+          epochIds.map((id) => addresses(program, collection, id).epoch),
+          { commitment: "confirmed", minContextSlot: r.slot },
+        );
+        if (
+          !Number.isSafeInteger(checked.context?.slot) ||
+          checked.context.slot < r.slot ||
+          checked.value.length !== epochIds.length
+        )
+          throw Error("Stale sealed delivery state");
+        for (let i = 0; i < epochIds.length; i++) {
+          const info = checked.value[i];
+          if (!info?.owner.equals(program))
+            throw Error("Wrong sealed epoch owner");
+          const epoch = readEpoch(info.data);
+          if (
+            epoch.id !== epochIds[i] ||
+            !epoch.pool.equals(keys.pool) ||
+            epoch.ticketCount > 32
+          )
+            throw Error("Wrong sealed epoch identity");
+          epochs.set(epoch.id, epoch);
+        }
+      }
       const packs = r.rows.map((receipt) => {
         const asset = core.get(receipt.asset.toBase58());
         if (
@@ -146,7 +177,22 @@ export function createSealedPackIndex({
               t.release.packCollection.toBase58())
         )
           throw Error("Sealed NFT does not match its release");
+        const delivery = receipt.opened
+          ? epochs.get(Number(receipt.epoch))?.tickets[receipt.ticket]
+          : null;
+        if (
+          receipt.opened &&
+          (!delivery || delivery.buyer.toBase58() !== receipt.opener.toBase58())
+        )
+          throw Error("Sealed opener does not match delivery ticket");
         return {
+          status: !receipt.opened
+            ? "sealed"
+            : delivery.refunded
+              ? "refunded"
+              : delivery.claimMask === 15
+                ? "ready"
+                : "preparing",
           asset: receipt.asset.toBase58(),
           serial: receipt.serial,
           opened: receipt.opened,

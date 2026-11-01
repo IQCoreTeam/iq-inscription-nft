@@ -197,8 +197,8 @@ Bun.serve({
         return fetch("http://127.0.0.1:4591/trait.svg");
       if (url.pathname === "/")
         return new Response(
-          '<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>IQ sealed packs · local source review</title><link rel="stylesheet" href="/css/nft_packs.css"><style>body{margin:0;background:#090b06;color:#e8e4d6}body>p{font:12px monospace;text-align:center;padding:12px;border-bottom:1px solid #444}</style><p>LOCAL SURFPOOL · GENERATED WALLETS · TEST SOL · ACTUAL IQ PACKS MODULE</p><main id="main_section"></main><script type="module" src="/qa/bootstrap.mjs"></script></html>',
-          { headers: { "Content-Type": "text/html" } },
+          '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>IQ sealed packs · local source review</title><link rel="stylesheet" href="/css/fonts.css"><link href="https://fonts.googleapis.com/css2?family=Zen+Dots&display=swap" rel="stylesheet"><link rel="stylesheet" href="/css/nft_packs.css"><style>body{margin:0;background:#090b06;color:#e8e4d6}body>p{font:12px monospace;text-align:center;padding:12px;border-bottom:1px solid #444}</style><p>LOCAL SURFPOOL · GENERATED WALLETS · TEST SOL · ACTUAL IQ PACKS MODULE</p><main id="main_section"></main><script type="module" src="/qa/bootstrap.mjs"></script></html>',
+          { headers: { "Content-Type": "text/html; charset=utf-8" } },
         );
       const file = await realpath(
         path.resolve(assets, "." + decodeURIComponent(url.pathname)),
@@ -215,7 +215,7 @@ Bun.serve({
                 ".js": "application/javascript",
                 ".mjs": "application/javascript",
                 ".css": "text/css",
-                ".html": "text/html",
+                ".html": "text/html; charset=utf-8",
                 ".webp": "image/webp",
                 ".png": "image/png",
                 ".woff2": "font/woff2",

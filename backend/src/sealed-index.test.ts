@@ -31,6 +31,10 @@ function fixture() {
   k.release.toBuffer().copy(receipt, 16);
   asset.toBuffer().copy(receipt, 48);
   receipt.writeBigUInt64LE(105000000n, 88);
+  const epoch = Buffer.alloc(2048);
+  epoch.write("NUBEPOC5");
+  k.pool.toBuffer().copy(epoch, 8);
+  epoch.writeUInt16LE(1, 65);
   const connection = {
     getGenesisHash: async () => "local-genesis",
     getMultipleAccountsInfoAndContext: async (keys) => {
@@ -41,9 +45,11 @@ function fixture() {
           owner: wrong ? key() : program,
           data: pk.equals(k.pool)
             ? pool
-            : pk.equals(k.release)
-              ? release
-              : receipt,
+            : pk.equals(k.epoch)
+              ? epoch
+              : pk.equals(k.release)
+                ? release
+                : receipt,
         })),
       };
     },
@@ -75,6 +81,7 @@ function fixture() {
     program,
     options,
     receipt,
+    epoch,
     reads: () => reads,
     setOwner: (value) => (owner = value),
     setWrong: () => (wrong = true),
@@ -124,6 +131,22 @@ test("wrong program account owner rejects before discovery is accepted", async (
     await expect(
       createSealedPackIndex(f.options).notify([f.asset.toBase58()]),
     ).rejects.toThrow(/unavailable/);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("redeemed packs expose proof actions only after confirmed complete claims", async () => {
+  const f = fixture();
+  try {
+    const index = createSealedPackIndex(f.options);
+    f.receipt[13] = 1;
+    await index.notify([f.asset.toBase58()]);
+    expect((await index.read()).packs[0].status).toBe("preparing");
+    f.epoch[256 + 44] = 15;
+    expect((await index.read()).packs[0].status).toBe("ready");
+    f.epoch[256 + 45] = 1;
+    expect((await index.read()).packs[0].status).toBe("refunded");
   } finally {
     f.db.close();
   }
