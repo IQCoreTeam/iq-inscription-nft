@@ -33,3 +33,5 @@ export {assertReviewedKit,reviewedKitDigest} from "./kit-review.mjs";
 export {requestPackWindow} from './window.mjs';
 // getWallets is the Wallet Standard app singleton, shared by creator and packs.
 export {getWallets} from '@wallet-standard/app';
+
+export {verifyPackRandomness} from "./randomness.mjs";

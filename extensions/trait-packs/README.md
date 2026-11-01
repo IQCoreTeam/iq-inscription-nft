@@ -47,3 +47,19 @@ legacy path. Before production launch, either implement and test that version
 or explicitly accept this version's single-release limitation. A program
 upgrade or new deployment cannot silently grant existing NFTs new delegates.
 No upgrade compatibility or automatic migration is promised by this draft.
+
+### On-demand draw verification
+
+`verifyPackRandomness` reads the configured pool and completed epoch in one
+confirmed batch, then the derived ORAO request at the same or newer slot. It
+checks the request owner, discriminator, requester, seed and fulfilled result;
+recomputes the domain-separated entropy hash; reconstructs the epoch's initial
+counts from final counts plus recorded allocations; and replays every draw with
+the contract's rejection sampling and ticket order. It performs no writes and
+uses two account-read requests plus the existing genesis check per invocation.
+
+This checks consistency of on-chain records obtained from the configured RPC.
+It does not independently validate the ORAO quorum signatures, prove historical
+program immutability, or remove oracle/RPC trust assumptions. Localnet output is
+explicitly labeled simulated. Unfinished allocation or missing claim data never
+produces a success result.
