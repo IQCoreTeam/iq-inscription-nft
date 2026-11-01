@@ -21,15 +21,26 @@ async function getIrys(): Promise<any> {
   return irysPromise;
 }
 
-// Upload bytes permanently and return the Arweave id. Funds the Irys balance
-// from the keypair only when it is short.
+// Keep the Irys funding step serialized: a collection stages its images with
+// several uploads in flight at once, and without this every concurrent upload
+// that saw a short balance would fire its own fund tx. Fund a generous buffer
+// (~200 images' worth) so funding runs a handful of times, not once per image.
+let fundLock: Promise<void> = Promise.resolve();
+async function ensureFunded(irys: any, price: any): Promise<void> {
+  const run = fundLock.then(async () => {
+    const balance = await irys.getLoadedBalance();
+    if (balance.isLessThan(price)) await irys.fund(price.multipliedBy(200));
+  });
+  fundLock = run.catch(() => {});
+  await run;
+}
+
+// Upload bytes permanently and return the Arweave id. Safe to call concurrently;
+// funding is serialized and the upload itself is independent per call.
 export async function uploadToArweave(bytes: Buffer, contentType: string): Promise<string> {
   const irys = await getIrys();
   const price = await irys.getPrice(bytes.length);
-  const balance = await irys.getLoadedBalance();
-  if (balance.isLessThan(price)) {
-    await irys.fund(price.multipliedBy(3));
-  }
+  await ensureFunded(irys, price);
   const receipt = await irys.upload(bytes, { tags: [{ name: "Content-Type", value: contentType }] });
   return receipt.id as string;
 }

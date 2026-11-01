@@ -15,7 +15,7 @@ import { getReservation, markAwaitingSubmit, markCancelled, markRejected, touchR
 import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
-import { validateItemIndices, stageCollection, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type Staged } from "./creator.ts";
+import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { startTensorPoller, recentSales } from "./tensor.ts";
@@ -215,41 +215,61 @@ app.post("/single/mint", async (c) => {
 //    -> the creator inscribes the returned bytes -> deploy (one tx incl. the
 //    fee) -> finalize (DB rows after it lands). Staging holds the seed in memory
 //    only, keyed by stagingId; a restart loses in-flight deploys (creator restarts).
-type Staging = { spec: DeploySpec; items: StageItem[]; staged: Staged; creator: string; collection?: string; registry?: string; manifestSig?: string; metaSig?: string; logoSig?: string; bannerSig?: string };
+// `staged` is set once staging is finished (the single-shot /creator/stage, or
+// the last /creator/stage/batch followed by /creator/stage/finish). While a
+// batched collection is still uploading, `acc` accumulates its ManifestItems and
+// `items` accumulates the light (bytes-dropped) StageItems for recordCollection.
+type Staging = { spec: DeploySpec; items: StageItem[]; staged?: Staged; acc?: ManifestItem[]; creator: string; collection?: string; registry?: string; manifestSig?: string; metaSig?: string; logoSig?: string; bannerSig?: string };
 const staging = new Map<string, Staging>();
 const nftConn = () => new Connection(config.rpcUrls[0], "confirmed");
 
-app.post("/creator/stage", async (c) => {
-  const b = await c.req.json().catch(() => ({} as any));
+// Validate the collection spec (shared by /creator/stage and /creator/stage/begin).
+function parseSpec(b: any): { spec: DeploySpec } | { error: string; code: 400 | 409 } {
   const slug = typeof b.slug === "string" ? b.slug : "";
-  if (!/^[a-z0-9-]{3,32}$/.test(slug)) return c.json({ error: "slug must be 3..32 of [a-z0-9-]" }, 400);
-  if (getCollection(slug)) return c.json({ error: "slug already exists" }, 409);
-  if (!isPubkey(b.creator)) return c.json({ error: "creator must be a base58 pubkey" }, 400);
-  if (typeof b.name !== "string" || !b.name || Buffer.byteLength(b.name) > 80) return c.json({ error: "name must be 1..80 bytes" }, 400);
-  if (typeof b.symbol !== "string" || !b.symbol) return c.json({ error: "symbol required" }, 400);
+  if (!/^[a-z0-9-]{3,32}$/.test(slug)) return { error: "slug must be 3..32 of [a-z0-9-]", code: 400 };
+  if (getCollection(slug)) return { error: "slug already exists", code: 409 };
+  if (!isPubkey(b.creator)) return { error: "creator must be a base58 pubkey", code: 400 };
+  if (typeof b.name !== "string" || !b.name || Buffer.byteLength(b.name) > 80) return { error: "name must be 1..80 bytes", code: 400 };
+  if (typeof b.symbol !== "string" || !b.symbol) return { error: "symbol required", code: 400 };
   const price = Number(b.price) || 0, deposit = Number(b.deposit) || 0;
-  if (deposit > price) return c.json({ error: "deposit cannot exceed price" }, 400);
-  const spec: DeploySpec = { slug, name: b.name, symbol: b.symbol, description: typeof b.description === "string" ? b.description : "", price, deposit, royaltyBps: Number(b.royaltyBps) || 0, sequential: !!b.sequential };
+  if (deposit > price) return { error: "deposit cannot exceed price", code: 400 };
+  return { spec: { slug, name: b.name, symbol: b.symbol, description: typeof b.description === "string" ? b.description : "", price, deposit, royaltyBps: Number(b.royaltyBps) || 0, sequential: !!b.sequential } };
+}
 
-  // items: [{ index, name, mime, imageBase64, template }]; the browser compresses first.
-  const raw = Array.isArray(b.items) ? b.items : [];
-  const items: StageItem[] = raw.map((it: any, i: number) => ({
-    index: it.index === undefined ? i + 1 : Number(it.index),
-    name: typeof it.name === "string" && it.name ? it.name : `${b.name} #${i + 1}`,
+// Decode a request's items: [{ index, name, mime, imageBase64, template }] (the
+// browser compresses first). `base` offsets the default index/name fallback so a
+// batched upload does not collide across requests; the browser sends an explicit
+// index per item anyway.
+function toStageItems(raw: any, specName: string, base: number): StageItem[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr.map((it: any, i: number) => ({
+    index: it.index === undefined ? base + i + 1 : Number(it.index),
+    name: typeof it.name === "string" && it.name ? it.name : `${specName} #${base + i + 1}`,
     bytes: Buffer.from(typeof it.imageBase64 === "string" ? it.imageBase64 : "", "base64"),
     mime: typeof it.mime === "string" ? it.mime : "image/png",
     template: typeof it.template === "object" && it.template ? it.template : {},
   }));
+}
+// Drop the raw bytes once Arweave has them; keep index/name/template for recordCollection.
+const lightItems = (items: StageItem[]) => items.map((it) => ({ ...it, bytes: Buffer.alloc(0) }));
+
+// Single-shot stage: the CLI and small collections upload every image in one
+// request. Large collections use begin/batch/finish below so no single request
+// carries the whole collection or runs the whole Arweave upload.
+app.post("/creator/stage", async (c) => {
+  const b = await c.req.json().catch(() => ({} as any));
+  const sp = parseSpec(b);
+  if ("error" in sp) return c.json({ error: sp.error }, sp.code);
+  const items = toStageItems(b.items, sp.spec.name, 0);
   try { validateItemIndices(items); }
   catch (e) { return c.json({ error: (e as Error).message }, 400); }
   for (const it of items) if (Buffer.byteLength(it.name) > 80) return c.json({ error: `name over 80 bytes at item ${it.index}` }, 400);
   if (!b.single && items.length === 0) return c.json({ error: "no items (or pass single:true)" }, 400);
 
   try {
-    const staged = await stageCollection(spec, items);
+    const staged = await stageCollection(sp.spec, items);
     const id = randomBytes(16).toString("hex");
-    // Drop raw bytes now that Arweave has them; keep index/name/template for recordCollection.
-    staging.set(id, { spec, items: items.map((it) => ({ ...it, bytes: Buffer.alloc(0) })), staged, creator: b.creator });
+    staging.set(id, { spec: sp.spec, items: lightItems(items), staged, creator: b.creator });
     return c.json({ stagingId: id, manifestJson: staged.manifestJson, collectionJson: staged.collectionJson, itemCount: staged.itemCount, deployFeeLamports: deployFee(staged.itemCount), arweaveGateway: config.arweaveGateway });
   } catch (e) {
     console.error("[creator/stage]", e);
@@ -257,10 +277,54 @@ app.post("/creator/stage", async (c) => {
   }
 });
 
+// Batched stage for large collections: begin (spec only) -> batch (N images at a
+// time, uploaded to Arweave) x many -> finish (validate the full set, build the
+// manifest + collection.json). Keeps every request small and fast.
+app.post("/creator/stage/begin", async (c) => {
+  const b = await c.req.json().catch(() => ({} as any));
+  const sp = parseSpec(b);
+  if ("error" in sp) return c.json({ error: sp.error }, sp.code);
+  const id = randomBytes(16).toString("hex");
+  staging.set(id, { spec: sp.spec, items: [], acc: [], creator: b.creator });
+  return c.json({ stagingId: id });
+});
+
+app.post("/creator/stage/batch", async (c) => {
+  const b = await c.req.json().catch(() => ({} as any));
+  const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
+  if (!s || !s.acc) return c.json({ error: "unknown stagingId (begin first; a finished staging cannot take more)" }, 404);
+  const items = toStageItems(b.items, s.spec.name, s.acc.length);
+  if (items.length === 0) return c.json({ error: "no items in batch" }, 400);
+  for (const it of items) if (Buffer.byteLength(it.name) > 80) return c.json({ error: `name over 80 bytes at item ${it.index}` }, 400);
+  try {
+    const rows = await uploadItems(items);
+    s.acc.push(...rows);
+    s.items.push(...lightItems(items));
+    return c.json({ received: s.acc.length });
+  } catch (e) {
+    console.error("[creator/stage/batch]", e);
+    return c.json({ error: "batch upload failed: " + (e instanceof Error ? e.message : String(e)) }, 502);
+  }
+});
+
+app.post("/creator/stage/finish", async (c) => {
+  const b = await c.req.json().catch(() => ({} as any));
+  const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
+  if (!s || !s.acc) return c.json({ error: "unknown or already-finished stagingId" }, 404);
+  if (s.acc.length === 0) return c.json({ error: "no items uploaded" }, 400);
+  let staged: Staged;
+  try { staged = finishStage(s.spec, s.acc); } // validates the full index set
+  catch (e) { return c.json({ error: (e as Error).message }, 400); }
+  s.staged = staged;
+  s.acc = undefined; // staging is finished; the deploy flow reads s.staged from here on
+  return c.json({ manifestJson: staged.manifestJson, collectionJson: staged.collectionJson, itemCount: staged.itemCount, deployFeeLamports: deployFee(staged.itemCount), arweaveGateway: config.arweaveGateway });
+});
+
 app.post("/creator/deploy", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
   const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
   if (!s) return c.json({ error: "unknown or expired stagingId" }, 404);
+  if (!s.staged) return c.json({ error: "stage not finished; call /creator/stage/finish first" }, 409);
   if (!isPubkey(b.creator) || b.creator !== s.creator) return c.json({ error: "creator mismatch" }, 400);
   if (!isPubkey(b.collection)) return c.json({ error: "collection must be a base58 pubkey" }, 400);
   const payer = isPubkey(b.payer) ? b.payer : b.creator; // the wallet itself, or its burner
@@ -291,7 +355,7 @@ app.post("/creator/deploy", async (c) => {
 app.post("/creator/collection-json", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
   const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
-  if (!s) return c.json({ error: "unknown or expired stagingId" }, 404);
+  if (!s || !s.staged) return c.json({ error: "unknown or unfinished stagingId" }, 404);
   const logoSig = isSig(b.logoSig) ? b.logoSig : undefined;
   const bannerSig = isSig(b.bannerSig) ? b.bannerSig : undefined;
   const fallback = s.staged.manifestItems.length ? `${config.arweaveGateway}/${s.staged.manifestItems[0].arweave_id}` : "";
@@ -304,7 +368,7 @@ app.post("/creator/collection-json", async (c) => {
 app.post("/creator/finalize", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
   const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
-  if (!s || !s.collection || !s.registry) return c.json({ error: "nothing to finalize for this stagingId" }, 404);
+  if (!s || !s.staged || !s.collection || !s.registry) return c.json({ error: "nothing to finalize for this stagingId" }, 404);
   if (getCollection(s.spec.slug)) { staging.delete(b.stagingId); return c.json({ ok: true, slug: s.spec.slug, already: true }); }
   // Record only once the registry actually exists on chain (the deploy tx landed).
   const info = await nftConn().getAccountInfo(new PublicKey(s.registry)).catch(() => null);
