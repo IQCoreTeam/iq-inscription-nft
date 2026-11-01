@@ -102,6 +102,9 @@ CREATE TABLE IF NOT EXISTS slot (
   PRIMARY KEY (slug, item_index)
 );
 
+CREATE INDEX IF NOT EXISTS slot_asset_idx ON slot(asset);
+CREATE INDEX IF NOT EXISTS slot_recent_idx ON slot(slug, registered_at DESC, item_index DESC);
+
 -- Secondary-market sales, pulled from Tensor (mainnet only). One row per on-chain
 -- sale tx; matched to our items by the NFT mint (= slot.asset).
 CREATE TABLE IF NOT EXISTS sale (
