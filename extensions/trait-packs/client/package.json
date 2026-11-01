@@ -8,7 +8,9 @@
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",
+    "@solana/signers": "2.0.0",
     "@solana/web3.js": "1.99.0",
+    "@tensor-foundation/marketplace": "1.0.0",
     "@wallet-standard/app": "1.1.1",
     "bs58": "6.0.0",
     "buffer": "6.0.3",

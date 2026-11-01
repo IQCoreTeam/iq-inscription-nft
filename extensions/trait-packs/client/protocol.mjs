@@ -99,6 +99,7 @@ export function readPool(data) {
     nftProgram: key(d,287),
     sealed: d[250] === 1,
     retired: d[252] !== 0,
+    sealedPacks: d[253] === 1,
     definitions: Array.from({ length: d[208] }, (_, i) => {
       const o = 384 + i * 240;
       return {

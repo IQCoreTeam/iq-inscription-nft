@@ -89,7 +89,7 @@ export function createWardrobeReader({ connection, program, collection }) {
       return {
         pool, epoch, slot:latest.context.slot, operationsLamports:opsInfo.lamports,
         requiredOperationsLamports:requiredOperations,
-        canPurchase:opsInfo.lamports>=requiredOperations && epoch.status===1 && epoch.ticketCount<32 &&
+        canPurchase:!pool.sealedPacks && opsInfo.lamports>=requiredOperations && epoch.status===1 && epoch.ticketCount<32 &&
           latest.context.slot<epoch.closeSlot && stock>=(epoch.ticketCount+1)*4,
       };
     });

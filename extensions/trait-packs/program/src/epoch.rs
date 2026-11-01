@@ -213,60 +213,7 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
             pool.try_borrow_mut_data()?.copy_from_slice(&pd);
             Ok(())
         }
-        2 => {
-            if a.len() != 5 || d.len() != 10 {
-                return Err(err(2));
-            }
-            let buyer = &a[0];
-            let pool = &a[1];
-            let epoch = &a[2];
-            let ops = &a[3];
-            let system = &a[4];
-            signer(buyer)?;
-            ops_checked(ops, pool, p)?;
-            let mut pd = pool_checked(pool, p)?;
-            let mut ed = epoch_checked(epoch, pool, p)?;
-            active(&pd, &ed)?;
-            let n = u16at(&ed, 65) as usize;
-            if pd[252] != 0
-                || ed[48] != 1
-                || Clock::get()?.slot >= u64at(&ed, 49)
-                || n >= MAX_TICKETS
-                || u16at(d, 0) as usize != n
-                || *system.key != system_program::id()
-            {
-                return Err(err(5));
-            }
-            let total = (0..pd[208] as usize)
-                .map(|i| u32at(&pd, DEF_START + i * DEF_SIZE + 232) as u64)
-                .sum::<u64>();
-            if total < (n as u64 + 1) * 4 {
-                return Err(err(7));
-            }
-            let outstanding = u64at(&pd, 242).checked_add(4).ok_or(err(8))?;
-            if ops.lamports() < reserved_budget(outstanding)? {
-                return Err(err(8));
-            }
-            let price = pack_charge(u64at(&pd, 200))?.total;
-            if u64at(d, 2) != price {
-                return Err(err(8));
-            }
-            let escrow = u64at(&ed, 69).checked_add(price).ok_or(err(8))?;
-            invoke(
-                &system_instruction::transfer(buyer.key, epoch.key, price),
-                &[buyer.clone(), epoch.clone(), system.clone()],
-            )?;
-            let at = TICKET_START + n * TICKET_SIZE;
-            putkey(&mut ed, at, buyer.key);
-            put64(&mut ed, at + 32, price);
-            ed[at + 40..at + 44].fill(255);
-            put16(&mut ed, 65, (n + 1) as u16);
-            put64(&mut ed, 69, escrow);
-            put64(&mut pd, 242, outstanding);
-            epoch.try_borrow_mut_data()?.copy_from_slice(&ed);
-            pool.try_borrow_mut_data()?.copy_from_slice(&pd);
-            Ok(())
-        }
+        2 => buy_ticket(p, a, d, None),
         3 => {
             if a.len() != 2 || !d.is_empty() {
                 return Err(err(2));
@@ -784,4 +731,76 @@ pub fn process(p: &Pubkey, a: &[AccountInfo], op: u8, d: &[u8]) -> ProgramResult
         }
         _ => Err(err(2)),
     }
+}
+
+// Shared ticket admission; only the sealed-pack module supplies validated prepaid escrow.
+pub(crate) fn buy_ticket<'a>(
+    p: &Pubkey,
+    a: &[AccountInfo<'a>],
+    d: &[u8],
+    prepaid: Option<&AccountInfo<'a>>,
+) -> ProgramResult {
+    if a.len() != 5 || d.len() != 10 {
+        return Err(err(2));
+    }
+    let buyer = &a[0];
+    let pool = &a[1];
+    let epoch = &a[2];
+    let ops = &a[3];
+    let system = &a[4];
+    signer(buyer)?;
+    ops_checked(ops, pool, p)?;
+    let mut pd = pool_checked(pool, p)?;
+    let mut ed = epoch_checked(epoch, pool, p)?;
+    active(&pd, &ed)?;
+    let n = u16at(&ed, 65) as usize;
+    if pd[252] != 0
+        || ed[48] != 1
+        || Clock::get()?.slot >= u64at(&ed, 49)
+        || n >= MAX_TICKETS
+        || u16at(d, 0) as usize != n
+        || *system.key != system_program::id()
+    {
+        return Err(err(5));
+    }
+    let total = (0..pd[208] as usize)
+        .map(|i| u32at(&pd, DEF_START + i * DEF_SIZE + 232) as u64)
+        .sum::<u64>();
+    if total < (n as u64 + 1) * 4 {
+        return Err(err(7));
+    }
+    if pd[253] == 1 && prepaid.is_none() {
+        return Err(err(40));
+    }
+    let outstanding = if prepaid.is_some() {
+        u64at(&pd, 242)
+    } else {
+        u64at(&pd, 242).checked_add(4).ok_or(err(8))?
+    };
+    if ops.lamports() < reserved_budget(outstanding)? {
+        return Err(err(8));
+    }
+    let price = pack_charge(u64at(&pd, 200))?.total;
+    if u64at(d, 2) != price {
+        return Err(err(8));
+    }
+    let escrow = u64at(&ed, 69).checked_add(price).ok_or(err(8))?;
+    if let Some(escrow) = prepaid {
+        transfer_owned(escrow, epoch, price)?;
+    } else {
+        invoke(
+            &system_instruction::transfer(buyer.key, epoch.key, price),
+            &[buyer.clone(), epoch.clone(), system.clone()],
+        )?;
+    }
+    let at = TICKET_START + n * TICKET_SIZE;
+    putkey(&mut ed, at, buyer.key);
+    put64(&mut ed, at + 32, price);
+    ed[at + 40..at + 44].fill(255);
+    put16(&mut ed, 65, (n + 1) as u16);
+    put64(&mut ed, 69, escrow);
+    put64(&mut pd, 242, outstanding);
+    epoch.try_borrow_mut_data()?.copy_from_slice(&ed);
+    pool.try_borrow_mut_data()?.copy_from_slice(&pd);
+    Ok(())
 }
