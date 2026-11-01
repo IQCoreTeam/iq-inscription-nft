@@ -3,9 +3,18 @@ import {
   PublicKey,
   Transaction,
   ComputeBudgetProgram,
+  SystemProgram,
 } from "@solana/web3.js";
-import { createPackClient, packPurchaseKey } from "./market.mjs";
-import { readPool } from "./protocol.mjs";
+import {
+  createPackClient,
+  packPurchaseKey,
+  reconcilePackTransaction,
+} from "./market.mjs";
+import {
+  readPool,
+  CLAIM_BUDGET_LAMPORTS,
+  PROVIDER_RESERVE_LAMPORTS,
+} from "./protocol.mjs";
 import {
   sealedAddresses,
   readSealedRelease,
@@ -42,16 +51,16 @@ export function createSealedPackClient({
       localGenesis,
       pendingPurchases,
     });
-  async function readSale() {
+  async function readTerms() {
     await assertConnectionChain(connection, chain, localGenesis);
     const result = await connection.getMultipleAccountsInfoAndContext(
-      [keys.pool, keys.release],
+      [keys.pool, keys.release, keys.ops],
       { commitment: "confirmed" },
     );
     if (
       !Number.isSafeInteger(result.context?.slot) ||
-      result.value.length !== 2 ||
-      result.value.some((info) => !info?.owner.equals(program))
+      result.value.length !== 3 ||
+      result.value.slice(0, 2).some((info) => !info?.owner.equals(program))
     )
       throw Error("Sealed pack terms unavailable");
     const pool = readPool(result.value[0].data),
@@ -64,26 +73,42 @@ export function createSealedPackClient({
       !release.pool.equals(keys.pool)
     )
       throw Error("Wrong sealed release");
-    return { pool, release, canPurchase: release.unminted > 0 };
+    const ops = result.value[2],
+      required =
+        (pool.outstandingTraits + 4) * CLAIM_BUDGET_LAMPORTS +
+        PROVIDER_RESERVE_LAMPORTS;
+    if (
+      !ops?.owner.equals(SystemProgram.programId) ||
+      ops.data.length ||
+      !Number.isSafeInteger(ops.lamports) ||
+      !Number.isSafeInteger(required)
+    )
+      throw Error("Invalid sealed delivery reserve");
+    return {
+      pool,
+      release,
+      operationsLamports: ops.lamports,
+      canPurchase: release.unminted > 0 && ops.lamports >= required,
+    };
+  }
+  async function readSale() {
+    const terms = await readTerms();
+    if (terms.release.unminted > 0 && !terms.canPurchase)
+      throw Error(
+        "The creator must fund the delivery reserve before another pack can be sold.",
+      );
+    return terms;
   }
   async function reconcilePurchase(account) {
-    const key = packPurchaseKey(chain, program, collection, account.address),
-      prior = await pendingPurchases.load(key),
-      result = await incumbent.reconcilePurchase(account);
-    if (result.state === "confirmed" && prior?.asset) {
-      try {
-        await notify([prior.asset]);
-      } catch (error) {
-        await pendingPurchases.save(key, prior);
-        throw Object.assign(
-          Error(
-            "Transaction confirmed; indexing is pending. Refresh before doing anything else.",
-          ),
-          { signature: prior.signature },
-        );
-      }
-    }
-    return result;
+    return reconcilePackTransaction({
+      connection,
+      chain,
+      localGenesis,
+      pendingPurchases,
+      key: packPurchaseKey(chain, program, collection, account.address),
+      afterConfirmation: (pending) =>
+        pending.asset ? notify([pending.asset]) : undefined,
+    });
   }
   async function send({
     wallet,
@@ -118,7 +143,7 @@ export function createSealedPackClient({
         Error(
           "Confirmed on chain; indexing is pending. Refresh before retrying.",
         ),
-        { signature },
+        { signature, confirmed: true },
       );
     }
     return { signature, asset: asset.toBase58() };
@@ -154,7 +179,15 @@ export function createSealedPackClient({
     },
     async open({ wallet, account, asset }) {
       const pinned = account.address,
-        sale = await readSale();
+        sale = await readTerms();
+      if (
+        sale.operationsLamports <
+        sale.pool.outstandingTraits * CLAIM_BUDGET_LAMPORTS +
+          PROVIDER_RESERVE_LAMPORTS
+      )
+        throw Error(
+          "The creator must fund existing delivery obligations before opening.",
+        );
       let current,
         requested = false;
       const check = () => {

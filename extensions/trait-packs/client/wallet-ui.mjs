@@ -152,9 +152,11 @@ export function mountPackWalletUI(
       status.dataset.kind = "error";
       if (error.signature) unresolved = error.signature;
       if (!disposed)
-        status.textContent = error.signature
-          ? `Confirmation unresolved. Check ${error.signature} before retrying.`
-          : error.message;
+        status.textContent = error.confirmed
+          ? `Confirmed on chain. Recovery is pending; refresh before another action. ${error.signature}`
+          : error.signature
+            ? `Confirmation unresolved. Check ${error.signature} before retrying.`
+            : error.message;
     } finally {
       busy = false;
       purchaseStep = null;

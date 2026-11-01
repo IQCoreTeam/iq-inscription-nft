@@ -146,3 +146,65 @@ test("SOL labels preserve u64 precision instead of rounding marketplace asking p
   assert.throws(() => formatSolLamports(Number.MAX_SAFE_INTEGER + 1));
   assert.throws(() => formatSolLamports(-1));
 });
+
+test("sealed quote rejects an unfunded delivery reserve before wallet interaction", async () => {
+  const { createSealedPackClient } = await import("../sealed-wallet.mjs");
+  const { SystemProgram } = await import("@solana/web3.js");
+  const k = sealedAddresses(program, collection),
+    pool = Buffer.alloc(4352),
+    release = Buffer.alloc(320);
+  pool.write("NUBSALE5");
+  collection.toBuffer().copy(pool, 40);
+  pool.writeBigUInt64LE(100000000n, 200);
+  pool[250] = 1;
+  pool[253] = 1;
+  release.write("NUBSEAL1");
+  k.pool.toBuffer().copy(release, 8);
+  release.writeUInt32LE(2, 72);
+  let reserve = 0;
+  const connection = {
+    getGenesisHash: async () => "local-genesis",
+    getMultipleAccountsInfoAndContext: async (keys) => {
+      assert.equal(keys.length, 3);
+      assert(keys[2].equals(k.ops));
+      return {
+        context: { slot: 1 },
+        value: [
+          { owner: program, data: pool },
+          { owner: program, data: release },
+          {
+            owner: SystemProgram.programId,
+            data: Buffer.alloc(0),
+            lamports: reserve,
+          },
+        ],
+      };
+    },
+  };
+  const client = createSealedPackClient({
+    connection,
+    program,
+    collection,
+    chain: "solana:localnet",
+    localGenesis: "local-genesis",
+    pendingPurchases: {
+      load: async () => null,
+      save: async () => {},
+      clear: async () => {},
+    },
+    notify: async () => {},
+  });
+  await assert.rejects(() => client.readSale(), /fund the delivery reserve/);
+  reserve = 148000000;
+  assert.equal((await client.readSale()).canPurchase, true);
+  pool.writeBigUInt64LE(4n, 242);
+  await assert.rejects(() => client.readSale(), /fund the delivery reserve/);
+  connection.getAccountInfoAndContext = async () => {
+    throw Error("epoch-read-reached");
+  };
+  const account = { address: holder.toBase58(), chains: ["solana:localnet"] };
+  await assert.rejects(
+    () => client.open({ wallet: { accounts: [account] }, account, asset }),
+    /epoch-read-reached/,
+  );
+});

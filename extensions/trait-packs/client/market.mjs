@@ -16,6 +16,49 @@ export const packPurchaseKey = (chain, program, collection, owner) =>
     owner,
   ].join(":");
 
+// Keep the durable checkpoint until every required confirmed follow-up succeeds.
+// A crash/restart may repeat an idempotent notification, never a payment.
+export async function reconcilePackTransaction({
+  connection,
+  chain,
+  localGenesis,
+  pendingPurchases,
+  key,
+  afterConfirmation,
+}) {
+  await assertConnectionChain(connection, chain, localGenesis);
+  const pending = await pendingPurchases.load(key);
+  if (!pending) return { state: "none" };
+  const status = (
+    await connection.getSignatureStatuses([pending.signature], {
+      searchTransactionHistory: true,
+    })
+  ).value[0];
+  if (
+    status?.err ||
+    (status && ["confirmed", "finalized"].includes(status.confirmationStatus))
+  ) {
+    try {
+      if (!status.err && afterConfirmation) await afterConfirmation(pending);
+      await pendingPurchases.clear(key, pending.signature);
+    } catch {
+      throw Object.assign(
+        Error(
+          status.err
+            ? "Transaction failed; recovery cleanup is pending."
+            : "Transaction confirmed; recovery is pending. Refresh before another action.",
+        ),
+        { signature: pending.signature, confirmed: !status.err },
+      );
+    }
+    return {
+      state: status.err ? "failed" : "confirmed",
+      signature: pending.signature,
+    };
+  }
+  return { state: "unresolved", signature: pending.signature };
+}
+
 // The host supplies its existing Wallet Standard wallet/account and explicit
 // network. No wallet discovery singleton, fixture signer or backend buyer key.
 export function createPackClient({
@@ -50,28 +93,15 @@ export function createPackClient({
     readSale,
     invalidate: reader.invalidate,
     async reconcilePurchase(account) {
-      await assertConnectionChain(connection, chain, localGenesis);
-      const key = packPurchaseKey(chain, program, collection, account.address);
-      const pending = await pendingPurchases.load(key);
-      if (!pending) return { state: "none" };
-      const status = (
-        await connection.getSignatureStatuses([pending.signature], {
-          searchTransactionHistory: true,
-        })
-      ).value[0];
-      if (
-        status?.err ||
-        (status &&
-          ["confirmed", "finalized"].includes(status.confirmationStatus))
-      ) {
-        await pendingPurchases.clear(key, pending.signature);
-        reader.invalidate();
-        return {
-          state: status.err ? "failed" : "confirmed",
-          signature: pending.signature,
-        };
-      }
-      return { state: "unresolved", signature: pending.signature };
+      const result = await reconcilePackTransaction({
+        connection,
+        chain,
+        localGenesis,
+        pendingPurchases,
+        key: packPurchaseKey(chain, program, collection, account.address),
+      });
+      if (["confirmed", "failed"].includes(result.state)) reader.invalidate();
+      return result;
     },
     async restoreOriginal({ wallet, account, avatar }) {
       const state = await reader.read(new PublicKey(avatar));
