@@ -26,6 +26,7 @@ import {
   snapshotSource,
   ORAO_ID,
 } from "./fixture.mjs";
+import { publishPackSetup } from "../../extensions/trait-packs/client/creator.mjs";
 import { catalogSetup } from "../../extensions/trait-packs/creator/catalog.mjs";
 import {
   addresses,
@@ -37,7 +38,6 @@ import {
 } from "../../extensions/trait-packs/client/protocol.mjs";
 import {
   sealedAddresses,
-  initializeSealedRelease,
   buySealedPack,
   openSealedPack,
   readSealedRelease,
@@ -73,8 +73,7 @@ for (const timeout of [false, true]) {
     console.log(label);
     return originalSend(label, ...rest);
   };
-  const c = new PublicKey("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"),
-    packs = Keypair.generate();
+  let packs: { publicKey: PublicKey };
   const k = sealedAddresses(f.program, f.collection),
     ep = addresses(f.program, f.collection);
   const readRelease = async () =>
@@ -142,21 +141,61 @@ for (const timeout of [false, true]) {
         lamports: 2000000000,
       }),
     ]);
-    await f.send(
-      "sealed-release",
-      [
-        initializeSealedRelease({
-          program: f.program,
-          collection: f.collection,
-          creator: f.creator.publicKey,
-          packCollection: packs.publicKey,
-          supply: 2,
-          name: "Local sealed pack",
-          uri: "http://127.0.0.1/pack.json",
-        }),
-      ],
-      [f.creator, packs],
-    );
+    const pending = new Map(),
+      accountCreator = {
+        address: f.creator.publicKey.toBase58(),
+        publicKey: f.creator.publicKey.toBytes(),
+        chains: ["solana:localnet"],
+        features: ["solana:signTransaction"],
+      };
+    const walletCreator = {
+      accounts: [accountCreator],
+      chains: accountCreator.chains,
+      features: {
+        "solana:signTransaction": {
+          supportedTransactionVersions: ["legacy"],
+          signTransaction: async ({ transaction }: any) => {
+            const tx = Transaction.from(transaction);
+            tx.partialSign(f.creator);
+            return [{ signedTransaction: tx.serialize() }];
+          },
+        },
+      },
+    };
+    const setup = {
+      spec,
+      collection: f.collection.toBase58(),
+      cost: { operationsReserveTargetLamports: 148000000 },
+    };
+    const creatorReceipts = await publishPackSetup({
+      connection: f.connection,
+      wallet: walletCreator,
+      account: accountCreator,
+      chain: "solana:localnet",
+      localGenesis: await f.connection.getGenesisHash(),
+      setup,
+      expectedCollection: f.collection.toBase58(),
+      deployment: {
+        program: f.program.toBase58(),
+        nftProgram: f.iqId.toBase58(),
+        provider: ORAO_ID,
+        providerTreasury: f.providerTreasury.publicKey.toBase58(),
+      },
+      operationsReserveLamports: 148000000,
+      sealedRelease: {
+        supply: 2,
+        name: "Local sealed pack",
+        uri: "http://127.0.0.1/pack.json",
+      },
+      pendingTransactions: {
+        load: async (key) => pending.get(key),
+        save: async (key, value) => pending.set(key, value),
+        clear: async (key) => pending.delete(key),
+      },
+    });
+    assert.equal(pending.size, 0);
+    packs = { publicKey: (await readRelease()).packCollection };
+    report.cases.push({ creatorWalletSetup: true, receipts: creatorReceipts });
     const assets = [Keypair.generate(), Keypair.generate()];
     const beforeBuys = await f.connection.getBalance(f.buyer.publicKey);
     for (let i = 0; i < 2; i++)
@@ -334,14 +373,6 @@ for (const timeout of [false, true]) {
     report.cases.push(
       "real Tensor listing, cancellation, relisting and independent-price purchase transfer unopened pack",
     );
-    await f.send("sale-window", [
-      instruction(f.program, 1, [
-        account(f.creator.publicKey, true, true),
-        account(k.pool, true),
-        account(ep.epoch, true),
-        account(SystemProgram.programId),
-      ]),
-    ]);
     const open = (holder: PublicKey) =>
       openSealedPack({
         program: f.program,

@@ -8,6 +8,14 @@ import {
   assertConnectionChain,
 } from "./transactions.mjs";
 
+export const packPurchaseKey = (chain, program, collection, owner) =>
+  [
+    chain,
+    new PublicKey(program).toBase58(),
+    new PublicKey(collection).toBase58(),
+    owner,
+  ].join(":");
+
 // The host supplies its existing Wallet Standard wallet/account and explicit
 // network. No wallet discovery singleton, fixture signer or backend buyer key.
 export function createPackClient({
@@ -43,12 +51,7 @@ export function createPackClient({
     invalidate: reader.invalidate,
     async reconcilePurchase(account) {
       await assertConnectionChain(connection, chain, localGenesis);
-      const key = [
-        chain,
-        program.toBase58(),
-        collection.toBase58(),
-        account.address,
-      ].join(":");
+      const key = packPurchaseKey(chain, program, collection, account.address);
       const pending = await pendingPurchases.load(key);
       if (!pending) return { state: "none" };
       const status = (
@@ -119,12 +122,7 @@ export function createPackClient({
       return { signature };
     },
     async purchase({ wallet, account, expectedTotal }) {
-      const key = [
-        chain,
-        program.toBase58(),
-        collection.toBase58(),
-        account.address,
-      ].join(":");
+      const key = packPurchaseKey(chain, program, collection, account.address);
       const pending = await pendingPurchases.load(key);
       if (pending)
         throw Object.assign(

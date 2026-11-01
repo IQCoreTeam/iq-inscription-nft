@@ -17,6 +17,7 @@ import { createPackOperatorMarket } from "../../extensions/trait-packs/operator/
 import {
   createPackPageStateReader,
 } from "../../extensions/trait-packs/service/pack-state.mjs";
+import {createSealedPackIndex} from "../../extensions/trait-packs/service/sealed-state.mjs";
 import { createOutfitView } from "../../extensions/trait-packs/service/outfit-view.mjs";
 import { createPublishedKitRenderer } from "../../extensions/trait-packs/service/kit-cache.mjs";
 
@@ -142,6 +143,7 @@ export async function createPackRuntime(options: {
   const markets = new Map(),
     sales = new Map(),
     pages = new Map(),
+    sealed = new Map(),
     views = new Map(),
     windowMarkets = new Map(),
     registrations = new Map<string, Promise<any>>();
@@ -553,6 +555,7 @@ export async function createPackRuntime(options: {
       markets.set(collection, market);
       sales.set(collection, sale);
       pages.set(collection, page);
+      sealed.set(collection,createSealedPackIndex({db,connection,program,collection:col,expectedGenesis:options.expectedGenesis,chain:options.chain,readCoreAssets}));
       views.set(collection, view);
       windowMarkets.set(collection, {
         market,
@@ -634,6 +637,7 @@ export async function createPackRuntime(options: {
     markets,
     sales,
     pages,
+    sealed,
     views,
     windowApi,
     sync,
@@ -655,6 +659,7 @@ export async function createPackRuntime(options: {
       markets.clear();
       sales.clear();
       pages.clear();
+      sealed.clear();
       views.clear();
       windowMarkets.clear();
       coreCache.clear();

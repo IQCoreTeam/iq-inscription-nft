@@ -3,7 +3,9 @@ import { sha256 } from "@noble/hashes/sha256";
 import { Buffer } from "buffer";
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 
-export const PLATFORM_TREASURY = new PublicKey("EWNSTD8tikwqHMcRNuuNbZrnYJUiJdKq9UXLXSEU4wZ1");
+export const PLATFORM_TREASURY = new PublicKey(
+  "EWNSTD8tikwqHMcRNuuNbZrnYJUiJdKq9UXLXSEU4wZ1",
+);
 export const PLATFORM_FEE_BPS = 500;
 export const CLAIM_BUDGET_LAMPORTS = 12_000_000;
 export const PROVIDER_RESERVE_LAMPORTS = 100_000_000;
@@ -13,7 +15,7 @@ export const PROVIDER_RESERVE_LAMPORTS = 100_000_000;
 export function packCharge(creatorPrice) {
   if (!Number.isSafeInteger(creatorPrice) || creatorPrice <= 0)
     throw Error("Pack creator price must be a positive exact lamport amount");
-  const fee = BigInt(creatorPrice) * BigInt(PLATFORM_FEE_BPS) / 10_000n;
+  const fee = (BigInt(creatorPrice) * BigInt(PLATFORM_FEE_BPS)) / 10_000n;
   const total = BigInt(creatorPrice) + fee;
   if (total > BigInt(Number.MAX_SAFE_INTEGER))
     throw Error("Pack payment exceeds the exact client amount range");
@@ -26,6 +28,17 @@ export function readU64Safe(data, offset) {
   if (value > BigInt(Number.MAX_SAFE_INTEGER))
     throw Error("On-chain u64 exceeds exact JavaScript number range.");
   return Number(value);
+}
+export function formatSolLamports(amount) {
+  if (typeof amount === "number" && !Number.isSafeInteger(amount))
+    throw Error("Use an exact lamport amount");
+  const value = BigInt(amount);
+  if (value < 0n) throw Error("Lamports cannot be negative");
+  const fraction = (value % 1000000000n)
+    .toString()
+    .padStart(9, "0")
+    .replace(/0+$/, "");
+  return (value / 1000000000n).toString() + (fraction ? "." + fraction : "");
 }
 export const key = (data, offset) =>
   new PublicKey(data.subarray(offset, offset + 32));
@@ -96,7 +109,7 @@ export function readPool(data) {
     activeEpoch: readU64Safe(d, 234),
     outstandingTraits: readU64Safe(d, 242),
     iqIntegration: d[254] === 1,
-    nftProgram: key(d,287),
+    nftProgram: key(d, 287),
     sealed: d[250] === 1,
     retired: d[252] !== 0,
     sealedPacks: d[253] === 1,
@@ -241,10 +254,20 @@ export function encodeRequest(funding, nonce) {
 
 // A server may prepare terms, but only the host's pinned deployment determines
 // which programs the creator/holder wallet is allowed to authorize.
-export function assertPackDeployment(spec,deployment,expectedCollection){
- if(!deployment?.program||!deployment?.nftProgram||!expectedCollection)throw Error('Verified pack deployment configuration is required');
- if(!new PublicKey(spec.collection).equals(new PublicKey(expectedCollection)))throw Error('The setup collection changed');
- for(const field of ['program','nftProgram',...(spec.provider?['provider','providerTreasury']:[])]){
-  if(!deployment[field]||!new PublicKey(spec[field]).equals(new PublicKey(deployment[field])))throw Error('The setup program or provider changed');
- }
+export function assertPackDeployment(spec, deployment, expectedCollection) {
+  if (!deployment?.program || !deployment?.nftProgram || !expectedCollection)
+    throw Error("Verified pack deployment configuration is required");
+  if (!new PublicKey(spec.collection).equals(new PublicKey(expectedCollection)))
+    throw Error("The setup collection changed");
+  for (const field of [
+    "program",
+    "nftProgram",
+    ...(spec.provider ? ["provider", "providerTreasury"] : []),
+  ]) {
+    if (
+      !deployment[field] ||
+      !new PublicKey(spec[field]).equals(new PublicKey(deployment[field]))
+    )
+      throw Error("The setup program or provider changed");
+  }
 }

@@ -135,3 +135,14 @@ test("sealed-only mode is exposed by the shared pool decoder", () => {
   bytes[253] = 0;
   assert.equal(readPool(bytes).sealedPacks, false);
 });
+
+test("SOL labels preserve u64 precision instead of rounding marketplace asking prices", async () => {
+  const { formatSolLamports } = await import("../protocol.mjs");
+  assert.equal(formatSolLamports(105000000), "0.105");
+  assert.equal(
+    formatSolLamports(18446744073709551615n),
+    "18446744073.709551615",
+  );
+  assert.throws(() => formatSolLamports(Number.MAX_SAFE_INTEGER + 1));
+  assert.throws(() => formatSolLamports(-1));
+});

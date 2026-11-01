@@ -3,6 +3,7 @@
 // the RPC pool; neither reaches a browser.
 
 import { Hono } from "hono";
+import {bodyLimit} from "hono/body-limit";
 import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
 import { PublicKey, Connection } from "@solana/web3.js";
@@ -67,6 +68,19 @@ app.get('/packs/:collection/state',async c=>{
   if(Object.keys(c.req.query()).some(key=>!['owner','after','before','asset'].includes(key)))return c.json({error:'Unexpected state parameters'},400);
   try{c.header('Cache-Control','no-store');return c.json(await reader.read(owner,{afterSignature:after,before:cursor===undefined?undefined:Number(cursor),asset}));}
   catch{return c.json({error:'Confirmed pack state is temporarily unavailable'},503);}
+});
+app.get('/packs/:collection/sealed',async c=>{
+ const reader=packRuntime?.sealed.get(c.req.param('collection'));if(!reader)return c.json({error:'Unknown collection'},404);
+ if(rateLimited('sealed-read:'+clientIp(c)))return c.json({error:'Too many reads'},429);
+ const before=c.req.query('before');if(Object.keys(c.req.query()).some(key=>key!=='before')||before!==undefined&&!/^[1-9][0-9]{0,9}$/.test(before))return c.json({error:'Invalid sealed page'},400);
+ try{return c.json(await reader.read({before:before===undefined?undefined:Number(before)}));}catch{return c.json({error:'Confirmed sealed release is unavailable'},503);}
+});
+app.use('/packs/:collection/sealed/notify',bodyLimit({maxSize:2048,onError:c=>c.json({error:'Notification too large'},413)}));
+app.post('/packs/:collection/sealed/notify',async c=>{
+ const reader=packRuntime?.sealed.get(c.req.param('collection'));if(!reader)return c.json({error:'Unknown collection'},404);
+ if(rateLimited('sealed-notify:'+clientIp(c)))return c.json({error:'Too many notifications'},429);
+ if(Number(c.req.header('content-length')??0)>2048)return c.json({error:'Notification too large'},413);
+ try{const raw=await c.req.text();if(raw.length>2048)throw Error();const body=JSON.parse(raw);if(Object.keys(body).some(key=>key!=='assets'))throw Error();return c.json(await reader.notify(body.assets));}catch{return c.json({error:'Sealed assets could not be verified'},400);}
 });
 app.all('/packs/:collection/window',c=>{
   if(!packRuntime)return c.json({error:'Sale-window requests are not configured'},404);

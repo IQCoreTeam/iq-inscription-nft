@@ -38,6 +38,8 @@ import {
 } from "../../extensions/trait-packs/client/tensor-market.mjs";
 import { createRequire } from "node:module";
 import { verifyPackRandomness } from "../../extensions/trait-packs/client/randomness.mjs";
+const previewPort=Number(process.env.IQ_QA_PREVIEW_PORT??4590);if(!Number.isInteger(previewPort)||previewPort<4590||previewPort>4599)throw Error("Set a local QA port 4590–4599");
+const previewOrigin="http://127.0.0.1:"+previewPort;
 const inputs = await inputsFromEnvironment(),
   f = await startSyntheticFixture(inputs);
 const out = new URL(
@@ -87,7 +89,7 @@ const spec = {
       bodyMask: 1,
       supply: 32,
       hash: createHash("sha256").update(JSON.stringify(metadata)).digest("hex"),
-      uri: "http://127.0.0.1:4590/trait.json",
+      uri: previewOrigin+"/trait.json",
       requiredSlot: 255,
       requiredDefinition: 255,
     },
@@ -112,7 +114,7 @@ await f.send(
       packCollection: packCollection.publicKey,
       supply: 8,
       name: "IQ local sealed pack",
-      uri: "http://127.0.0.1:4590/pack.json",
+      uri: previewOrigin+"/pack.json",
     }),
   ],
   [f.creator, packCollection],
@@ -367,11 +369,11 @@ async function action(body: any) {
 }
 Bun.serve({
   hostname: "127.0.0.1",
-  port: 4590,
+  port: previewPort,
   maxRequestBodySize: 2048,
   async fetch(req) {
     const u = new URL(req.url);
-    if (u.host !== "127.0.0.1:4590")
+    if (u.host !== "127.0.0.1:"+previewPort)
       return new Response("Local only", { status: 403 });
     if (req.method === "GET") {
       if (u.pathname === "/state")
@@ -397,7 +399,7 @@ Bun.serve({
     }
     if (req.method === "POST" && u.pathname === "/action") {
       if (
-        req.headers.get("origin") !== "http://127.0.0.1:4590" ||
+        req.headers.get("origin") !== previewOrigin ||
         req.headers.get("content-type") !== "application/json"
       )
         return new Response("Local JSON origin required", { status: 403 });
@@ -421,3 +423,7 @@ Bun.serve({
 console.log(
   "Sealed-pack browser QA: http://127.0.0.1:4590 — generated wallets and test SOL only.",
 );
+
+// Private generated-actor context for the actual-source UI acceptance host.
+// This export is never exposed by HTTP and is not production authentication.
+export const sealedQa={f,actors,packCollection,k,price,genesis,market,db,known,jobs,metadata};

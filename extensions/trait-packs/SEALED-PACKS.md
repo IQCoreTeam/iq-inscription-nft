@@ -34,12 +34,40 @@ It has not been deployed to devnet/mainnet, published or externally reviewed.
 
 `sealed-ui.test.mjs` tests confirmation/cancellation, duplicate-action locking and actor continuity in a DOM fixture. The HTTP rehearsal exercises the retained Surfpool preview. Neither substitutes for visual browser acceptance.
 
-Browser preview: http://127.0.0.1:4590/ . Test accounts are Collector A/B; the local confirmation dialog is deliberately not a Phantom prompt.
+Standalone protocol preview: http://127.0.0.1:4590/ . Test accounts are Collector A/B; the local confirmation dialog is deliberately not a Phantom prompt. The actual-source IQ page is also hosted at http://127.0.0.1:4592/ with generated Wallet Standard adapters. Its current collection is returned by `/qa/config`; the adapters keep generated secrets in the QA host and expose only signatures.
 
 ## Remaining acceptance
 
 - Browser desktop/mobile review and screenshots when local browser control is enabled.
-- Integrating this new sealed mode into the actual IQ creator/market screens with real Wallet Standard signing and persistent indexer discovery. The isolated QA page demonstrates the protocol flow, not completion of that production UI integration.
+- The paired local frontend now includes the actual creator opt-in, packs page, Wallet Standard sender and persistent receipt index. This mounting is covered by DOM/HTTP/Surfpool tests; visual browser acceptance is still pending, and physical wallets/public indexing have not been accepted.
 - Review the escrow-until-open policy, operations capital, permanent pack media, recovery economics and public upgrade authority before any release.
 - Multiple separate releases for one existing collection remain a future pool-versioning change; this prototype supports one fresh sealed pool/release per collection.
 - Public oracle and marketplace ingestion/device acceptance are outside local Surfpool proof. No outcome/rareness/value guarantee is made.
+
+## Integrated source and caching
+
+The paired frontend branch is `codex/sealed-packs-ui-local-20261101` in
+`iq6900-sealed-local-20261101`. `nft_sealed_packs.mjs` mounts only when both the
+confirmed state and host config explicitly enable sealed mode. The creator
+checkbox is likewise hidden without that host capability. It publishes a
+separate fixed-supply pack collection before the first epoch; existing active
+legacy pools are not silently migrated. Pack metadata must already be an IQ
+inscription on the configured gateway. Source-art consent remains separate.
+
+`sealed-state.mjs` uses the incumbent SQLite database for asset discovery. A
+notification accepts only bounded lists of receipts verified on the configured
+chain/program; it never accepts owner/payment claims from the caller. Reads
+page at 24 assets and reread Core ownership at a confirmed slot. A restart
+retains indexed asset IDs. An external minting client must notify this endpoint
+or supply a separately verified indexer backfill; no global RPC scan runs.
+
+`sealed-wallet.mjs` reuses the incumbent explicit-chain sender and durable
+purchase checkpoint. Lost confirmations or indexing failures retain the signed
+identity; the UI cannot silently replay a purchase. On-demand opening can wait
+for a budgeted window, then burns the pack without charging another primary
+purchase price. Historical openings use their epoch cursor, and pending reads
+are bounded to two minutes.
+
+Tensor's SDK is in a separate lazy browser bundle. The build keeps IQ's web3 v1
+wallet boundary while allowing Tensor's pinned v2 resolver imports, rather than
+rewriting them with a global alias. Ordinary collections remain unmodified.

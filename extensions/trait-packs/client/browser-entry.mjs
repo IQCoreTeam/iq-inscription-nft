@@ -14,7 +14,7 @@ export { createWardrobeReader } from "./state.mjs";
 
 export { packCharge, PLATFORM_TREASURY, PLATFORM_FEE_BPS } from "./protocol.mjs";
 
-export { createPackClient } from "./market.mjs";
+export { createPackClient,packPurchaseKey } from "./market.mjs";
 
 export { mountPackWalletUI } from "./wallet-ui.mjs";
 
@@ -35,3 +35,6 @@ export {requestPackWindow} from './window.mjs';
 export {getWallets} from '@wallet-standard/app';
 
 export {verifyPackRandomness} from "./randomness.mjs";
+
+export {createSealedPackClient} from "./sealed-wallet.mjs";
+export {readSealedRelease,sealedAddresses,initializeSealedRelease} from "./sealed.mjs";

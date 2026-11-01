@@ -616,6 +616,7 @@ export function createPackPageStateReader({
         collectionAddress: collection.toBase58(),
         collectionSlug,
         appearance: publicAppearance,
+        sealedPacks:state.pool.sealedPacks,
         priceLamports: state.pool.price,
         platformFeeLamports: state.pool.platformFee,
         totalPriceLamports: state.pool.totalPrice,

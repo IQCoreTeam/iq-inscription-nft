@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "npm run build && node --test test/*.test.mjs",
-    "build": "esbuild browser-entry.mjs --bundle --platform=browser --format=esm --outfile=dist/browser.js --alias:@solana/web3.js=./node_modules/@solana/web3.js --alias:buffer=./node_modules/buffer --alias:@noble/hashes=./node_modules/@noble/hashes"
+    "build": "node build.mjs"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",

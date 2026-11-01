@@ -1,3 +1,4 @@
+import { formatSolLamports } from "./protocol.mjs";
 import { compatibleWallets, createWalletSession } from "./wallet.mjs";
 
 // Mount inside the existing pack page. Registry/client are the host's existing
@@ -62,14 +63,6 @@ export function mountPackWalletUI(
     disposed = false,
     unresolved = null,
     purchaseStep = null;
-  const sol = (n) => {
-    const value = BigInt(n),
-      fraction = (value % 1000000000n)
-        .toString()
-        .padStart(9, "0")
-        .replace(/0+$/, "");
-    return (value / 1000000000n).toString() + (fraction ? "." + fraction : "");
-  };
   const emit = (name, detail) =>
     root.dispatchEvent(
       new document.defaultView.CustomEvent(name, { bubbles: true, detail }),
@@ -85,6 +78,7 @@ export function mountPackWalletUI(
     );
   }
   function render() {
+    checkout.setAttribute("aria-busy", String(busy));
     address.hidden = !session?.account;
     address.textContent = session?.account
       ? session.account.address.slice(0, 4) +
@@ -109,18 +103,18 @@ export function mountPackWalletUI(
           session.account.features.includes("solana:signMessage"))
       );
     quote.textContent = sale
-      ? sol(sale.pool.totalPrice) + " SOL"
+      ? formatSolLamports(sale.pool.totalPrice) + " SOL"
       : "Loading price…";
     fees.textContent = sale
       ? "Includes " +
-        sol(sale.pool.platformFee) +
+        formatSolLamports(sale.pool.platformFee) +
         " SOL IQ fee · network fees extra"
       : "";
     quote.title = sale
       ? "Creator " +
-        sol(sale.pool.price) +
+        formatSolLamports(sale.pool.price) +
         " SOL + IQ " +
-        sol(sale.pool.platformFee) +
+        formatSolLamports(sale.pool.platformFee) +
         " SOL"
       : "";
     if (purchaseRoot !== root)
