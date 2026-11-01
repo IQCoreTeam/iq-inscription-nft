@@ -3,19 +3,20 @@
 import { Hono } from "hono";
 import type { CollectionRow, ItemRow } from "./db.ts";
 
-type ShareSettings = { siteBase: string; gatewayBase: string; cluster: string };
-type ShareData = {
-  getCollection(slug: string): CollectionRow | null;
-  getItem(slug: string, index: number): ItemRow | null;
-  getAssetSlot(address: string): { slug: string; item_index: number; inscription_sig: string } | null;
-  latestMintSignature(slug: string): string | null;
-};
 const escape = (value: string) => value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 // Only known inscription transaction signatures produce media URLs, never a
 // stored remote image URL. Empty/invalid signatures leave the card text-only.
 const signature = (value: string | null) => value && /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(value) ? value : null;
 
-export function createSharePages(settings: ShareSettings, data: ShareData) {
+export function createSharePages(
+  settings: { siteBase: string; gatewayBase: string; cluster: string },
+  data: {
+    getCollection(slug: string): CollectionRow | null;
+    getItem(slug: string, index: number): ItemRow | null;
+    getAssetSlot(address: string): { slug: string; item_index: number; inscription_sig: string } | null;
+    latestMintSignature(slug: string): string | null;
+  },
+) {
   const app = new Hono();
   const site = new URL(settings.siteBase);
   const gateway = new URL(settings.gatewayBase);
