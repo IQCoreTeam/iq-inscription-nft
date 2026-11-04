@@ -1,49 +1,37 @@
-# Optional packs — local review candidate
+# Optional sealed trait packs — local readiness
 
-Optional follow-up to discussion draft #6. The production factories are mounted behind explicit host configuration; ordinary collections remain the default. This is a local technical-review candidate, not approval to deploy or publish private artwork.
+Reviewed November 3, 2026. Backend source starts at draft #6 `bacc6e8a`; paired frontend starts at draft #15 `8a3da5aa`. These are optional review branches, not a production deployment. Ordinary collections remain independent.
 
-## Implemented
+## Implemented local product
 
-- V5 uses distinct pool/epoch seeds and format tags. Deploy under a separate pack-program ID; keep V4 available for outstanding claims/refunds. The paired IQ hook accepts both correctly bound formats.
-- Creator-selected fixed price plus a fixed 5% IQ surcharge, matching the NFT program treasury. Both amounts remain escrowed until complete delivery. Timeout refunds include the surcharge; network fees are separate. The signed purchase pins the displayed total.
-- Creator HTTP ingress uses an origin/network/program-bound one-use wallet challenge, then a 15-minute bearer session held only in browser memory and hashed in the existing SQLite DB. Protected requests must match the authenticated owner. On-chain creator/holder checks remain independent; login cannot sign transactions.
-- Actual creator and packs page integration: explicit reviewed-layer publication consent, original image hashes, wallet-signed permanent IQ publication, receipt recovery, unsigned catalog setup and confirmed finalization. Unused publication funding has a separate resumable refund.
-- Wallet Standard purchase/equipment controls: explicit chain/genesis and deployment/collection/selected-NFT pins, simulation/preflight, exact signed-message checks, durable pending receipt before broadcast, and no automatic replay of uncertain submissions.
-- Existing backend SQLite lifecycle: bounded leased jobs, signed bytes persisted before broadcast, restart/lost-response reconciliation, actual ORAO adapter, allocation cursors, claims, payouts, refunds and sponsor-surplus recovery. Empty pools do not endlessly create sale windows.
-- Bounded job rotation prevents idle collections from starving later collections. Expired unfinished creator drafts release their quota; finalized recovery records remain intact. Pack runtime setup checks the existing SDK reader's cluster without changing the ordinary NFT reader's RPC.
-- Previous epochs must finish delivery/payout or refunds and return requester surplus before the next epoch opens. Atomic sponsor sweep plus open handles donated dust without redirecting the refund.
-- Holder and creator jointly approve each NFT's editable metadata. Equip/remove checks actual Core ownership. Original metadata recovery preserves the immutable burn-safety hook; re-enabling does not duplicate it.
-- Finalized consent context recovers permanent recipe/trait bytes after temporary staged images are removed, using retained reviewed manifest/hash records. This is not a total-database-loss recovery claim.
-- Confirmed mutable state reads are bounded, coalesced and short-lived; immutable media/recipes use IQ's gateway cache and readback hashes. No browser background polling. Core/pack transactions are not submitted to IQ's table `/notify` endpoint.
+- Creator explicitly opts in, validates compatible layers and supplies, consents to permanent IQ media publication and signs collection-specific setup. Ordinary collection creation stays the default.
+- Packs discovery uses a dedicated PACKS tab, supported collection cards/pages and MANAGE OUTFIT under supported holdings. No pack entry is shown for an ordinary collection or absent deployment configuration.
+- V6 sealed packs are fixed-supply Core NFTs: buy, hold, transfer, list/cancel/buy through the Tensor adapter, then current-holder opening consumes the sealed pack and delivers four trait NFTs. One sealed release per collection is implemented; multiple future seasons are not.
+- Creator sets the base price. A proposed fixed 5% IQ surcharge is added. The original purchase payment stays escrowed until delivery; timeout refunds cover that payment, not a secondary buyer's resale markup. Network/account costs are separate. These economics need maintainer approval.
+- The existing operator/job runner handles preparation, provider randomness, delivery, payout and interrupted-operation recovery. Purchase/open/signing actions pin network, collection, current wallet, message and pending receipt before broadcast.
+- Creator authentication uses one-use wallet challenges and short-lived sessions. Ownership and on-chain consent are independently checked. History/state reads are bounded and cached; immutable media is hash-verified through the gateway. Ordinary Core transfers are not sent to the IQ table notify endpoint.
+- Holder opt-in, compatible equip/remove, original metadata restoration and the transfer-safe outfit guard are implemented. An equipped outfit remains bound to its avatar custody. Guarded sale assertions must be supported by the chosen venue; arbitrary external orders do not automatically promise an exact loadout.
 
-## Reproducible proof
+## Evidence and limits
 
-See `qa/trait-packs/README.md` for the portable synthetic Surfpool fixture, exact binary hashes, pinned dependencies and execution steps. It checks nine Wallet Standard purchases, two allocation batches, 36 Core rewards, actual SQLite reopen/lost-response recovery, creator/IQ payouts, sponsor refunds and provider-timeout full refunds. Creator, client, operator, service and mounted-page regression suites cover the remaining boundaries. The native fixture also rejects unsigned/replayed/wrong-owner HTTP staging and traverses three real sale epochs, preserving and removing equipment issued on an older page.
+The portable offline Surfpool fixtures in `qa/trait-packs/README.md` cover generated-wallet purchases, sealed resale/opening, operator recovery, payouts/refunds, native IQ publication and holder outfit operations. Receipts identify binary hashes and source snapshots. Historical results must not be presented as a fresh run. Synthetic provider fulfillment proves the integration locally, not public-network ORAO availability.
 
-Private local browser evidence covers the actual creator and packs pages: ten source artifacts published and read back, confirmed-write recovery after a cold-cache timeout and reload, unused burner balance refund, ordinary NFT mint, three paid purchases, twelve delivered Core traits, four-card reveal, holder approval, equip/remove, original metadata restoration, wallet switching and narrow-phone detail views. The original image was also decoded byte-for-byte from its inscription while the NFT used an outfit URI.
+November 3 fresh regression runs: client 73, creator 30, operator 20, service 25, paired UI 57 and paired site 146 pass. The site suite also passes in parallel after replacing the attachment fixture's FileReader timing assumption with completion-based waiting. The UI's ordinary-collection comparison now uses the current owner-holdings API. These two test corrections are local.
 
-Browser QA uses generated keys, private approved preview art and a test ORAO quorum on offline Surfpool. Its private SDK shim selects the existing heavy throughput mode only for loopback; production SDK speed and wallet guards are unchanged. This is functional proof, not a public RPC throughput benchmark. The ordinary NFT upload adapter uses local immutable staging, so this does not establish live Irys acceptance. The portable fixture uses synthetic art and requires neither private Nubbies layers nor personal keys.
+No independent marketplace is required for pack checkout, opening or outfit management. Existing external-market adapters remain distinct from marketplace indexing/acceptance. The separate ordinary in-site marketplace experiment is parked.
 
-## Dressed NFT sales: verified foundation, unfinished product flow
+## Before public activation
 
-Equipped traits follow the avatar's current owner through custody; they do not require separate asset transfers in the avatar sale. A fresh native Surfpool proof composes the existing outfit assertion, exact seller/royalty payments and Core transfer in one transaction. Changed outfits reject with the guard's exact error before payment; a valid sale transfers avatar control, prevents the old holder withdrawing equipped gear and allows the new holder to withdraw it.
+1. Maintainer approval of program IDs/upgrade authority, IQ hook compatibility, cluster/genesis, ORAO configuration, operator identity and HTTPS/proxy/request-origin policy.
+2. Approve creator/platform economics and fund explicit media, account-rent and operator reserves. Buyer escrow cannot be treated as available operating revenue.
+3. Publish each collection's final reviewed trait layers, masks, metadata and recovery recipe to permanent IQ storage; configure reachable gateways and verify readback. Nubbies artwork remains private and unfinished.
+4. Test physical extension/mobile wallets, live provider/operator recovery and external marketplace transfer/indexing behavior. Local generated-wallet tests do not establish these.
+5. Review final source and evidence before updating drafts. No deployment, mainnet spending, private art or personal keys are authorized by this document.
 
-This is a bilateral, co-signed direct-sale proof. It is not a persistent listing, offline-seller orderbook or external-marketplace integration. A production listing UI and chosen venue adapter must bind the asset, seller, price/royalties, expiry and exact loadout snapshot. The buyer must receive that outfit or reject the trade; arbitrary third-party orders do not automatically include this assertion. Reuse a compatible Core venue rather than silently treating a payment helper as a marketplace.
+## Deferred features
 
-## Decisions and acceptance before public activation
+Multiple releases/seasons per collection and an IQ-owned general marketplace are outside the current completed local flow. Do not expose unsupported controls or promise either capability.
 
-1. Approve program ownership, upgrade authorities, V5 deployment IDs, configured cluster, permanent gateway origins, ORAO network config and relay identity. V5 is not an in-place upgrade of active V4 sales.
-2. Fund explicit operations rent separately from buyer escrow. The creator funds Core reward rent; the relay sponsors network/oracle work and receives requester surplus back. The fixed IQ fee is gross revenue, not guaranteed profit. Quote current rent/provider/network costs before funding.
-3. Approve the creator/holder co-sign UX. This implementation does not delegate collection-wide metadata authority or promise unattended consent.
-4. Configure HTTPS/trusted-proxy ingress, staging retention and rate/demand budgets. Creator routes now require wallet-authenticated sessions; a draft ID and owner string alone are insufficient. The existing IP limiter covers sign-in/staging, sale-window requests and history reads. Host proxy/header and retention policies still require deployment review.
-5. History now uses bounded, cursor-based epoch pages rather than a collection-wide cap. Two epochs yield at most 64 packs and 256 traits per page; up to six off-page equipped traits remain available. Older pages remain reachable, and operator windows/catalog validation no longer stop at the old totals. The local regression covers 70 epochs/280 traits; real-provider load/latency at intended scale remains an activation check, not proof of an unlimited indexer.
-6. Complete actual extension/mobile-wallet, public-network ORAO/operator, gateway-host availability and external marketplace acceptance. Surfpool and browser-generated wallets do not establish those results. The native fixture separately verifies freshly minted Core asset routing before registered-slot reconciliation.
-7. Review source, fresh screenshots/video and paired frontend/backend packaging before any remote update. Private art/layers/keys and local signer/provider harnesses stay excluded.
+## Dependency limits
 
-## Dependency/build notes
-
-Sharp is pinned to 0.35.5. Client dependencies retain four moderate web3/Jayson/uuid advisories rather than taking an unreviewed breaking major upgrade. The optional QA dependency audit also reports Anchor's TOML workspace-loader advisories; the fixture uses an explicit IDL and never loads an untrusted workspace/TOML file. These are documented residuals, not a zero-advisory claim.
-
-Metaplex 0.11.2 emits a stack diagnostic for `registry_records_to_plugin_list`. The fresh offline build's linked-ELF check found that function absent and direct negative R10 displacements no larger than 4096 bytes; the same binary executes in the portable smoke and native lifecycle. Neither check is a general memory-safety audit or a claim that the upstream diagnostic is fixed.
-
-Baseline: backend main `98781d4bedffbef194ff0f144d65fdce1509068b`; the original discussion commit `f04ddba` is preserved in #6's history.
+Pinned packages and vendor licenses are retained. Inherited web3/Jayson/uuid advisories and QA-only Anchor workspace-loader advisories remain documented; this is not a zero-advisory or comprehensive security-audit claim. Metaplex build diagnostics must be assessed alongside exact ELF hashes and native execution receipts rather than hidden or treated as proof of safety.

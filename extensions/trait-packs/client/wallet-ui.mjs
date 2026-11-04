@@ -91,7 +91,8 @@ export function mountPackWalletUI(
     disconnect.disabled = busy || !session?.account;
 
     refresh.disabled = busy;
-    buy.textContent = purchaseStep ?? "Buy pack";
+    const soldOut = sale?.release?.unminted === 0;
+    buy.textContent = purchaseStep ?? (soldOut ? "Sold out" : "Buy pack");
     buy.disabled =
       busy ||
       !!unresolved ||
@@ -117,8 +118,10 @@ export function mountPackWalletUI(
         formatSolLamports(sale.pool.platformFee) +
         " SOL"
       : "";
+    if (soldOut && !purchaseStep && status.dataset.kind !== "error")
+      status.textContent = "All packs are sold. You can still open packs you own.";
     if (purchaseRoot !== root)
-      status.hidden = !purchaseStep && status.dataset.kind !== "error";
+      status.hidden = !soldOut && !purchaseStep && status.dataset.kind !== "error";
   }
   function discover() {
     if (dialog.open) dialog.close("");

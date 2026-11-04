@@ -42,6 +42,7 @@ test("wallet UI uses host registry, displays fee, disconnects and blocks unresol
     invalidate() {},
     readSale: async () => ({
       canPurchase: true,
+      release: { unminted: 8 },
       pool: { price: 100000000, platformFee: 5000000, totalPrice: 105000000 },
     }),
     purchase: async (input) => {
@@ -269,4 +270,19 @@ test("multiple wallets use a cancellable dialog and removal before selection can
   await settle();
   assert.deepEqual(connected, ["Wallet B"]);
   assert.match(root.textContent, /unavailable/);
+});
+
+
+test("sealed sold-out checkout explains that owned packs remain openable", async () => {
+  const dom = new JSDOM("<section></section>"), root = dom.window.document.querySelector("section");
+  const dispose = mountPackWalletUI(root, {
+    registry: {get:()=>[],on:()=>()=>{}}, chain:"solana:devnet",
+    client: {readSale:async()=>({canPurchase:false,release:{unminted:0},pool:{price:100000000,platformFee:5000000,totalPrice:105000000}})}
+  });
+  await settle();
+  const buy = [...root.querySelectorAll("button")].find(button=>button.textContent==="Sold out");
+  assert.ok(buy);assert.equal(buy.disabled,true);
+  assert.match(root.querySelector(".checkout-status").textContent,/still open packs you own/);
+  assert.equal(root.querySelector("select"),null);
+  dispose();dom.window.close();
 });
