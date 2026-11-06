@@ -1,5 +1,5 @@
-import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Keypair } from "@solana/web3.js";
@@ -10,9 +10,12 @@ process.env.DB_PATH = join(dir, "test.sqlite");
 process.env.REGISTRAR_KEYPAIR = join(dir, "registrar.json");
 writeFileSync(process.env.REGISTRAR_KEYPAIR, JSON.stringify(Array.from(Keypair.generate().secretKey)));
 const { db } = await import("./db.ts");
+// bun test runs every file in one process, so the first file's DB_PATH is the
+// one db.ts opens: start from empty tables instead of closing or deleting the
+// database, which would break whichever file runs next.
+for (const t of ["sale", "slot", "returned", "reservation", "allowlist", "item", "collection"]) db.run(`DELETE FROM ${t}`);
 const { recordCollection, stageCollection } = await import("./creator.ts");
 const { listCollections } = await import("./collections.ts");
-afterAll(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
 
 const spec = { slug: "regression", name: "Test", symbol: "TEST", description: "", price: 0, deposit: 0, royaltyBps: 0, sequential: true };
 const item = (index: number) => ({ index, name: `Item ${index}`, bytes: Buffer.alloc(0), mime: "image/png", template: {} });

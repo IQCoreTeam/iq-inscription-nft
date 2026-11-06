@@ -9,7 +9,7 @@ import { db, nowSec, type ReservationRow } from "./db.ts";
 import { config } from "./config.ts";
 import { getCollection } from "./collections.ts";
 import { fetchRegistry, isMinted } from "./program.ts";
-import { markConfirmed, markExpired } from "./reservations.ts";
+import { markExpired, markLanded } from "./reservations.ts";
 
 // `reserved` past TTL + slack, and `awaiting_submit` (co-signed, never seen to
 // land) past TTL + a long slack: a co-signed tx dies with its blockhash in ~90s,
@@ -41,7 +41,7 @@ export async function reap(): Promise<ReapReport> {
       bitmaps.set(c.slug, bitmap);
     }
     if (isMinted(bitmap, r.item_index)) {
-      markConfirmed(r.id);
+      markLanded(r);
       confirmed++;
     } else {
       markExpired(r);

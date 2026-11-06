@@ -62,16 +62,41 @@ export function validateItemIndices(items: { index: number }[]): void {
   }
 }
 
-// Upload each image to Arweave, build the manifest + collection.json. `single`
-// (itemCount 0) skips Arweave and leaves the manifest empty (no items, no sig).
-export async function stageCollection(spec: DeploySpec, items: StageItem[]): Promise<Staged> {
-  validateItemIndices(items);
-  const manifestItems: ManifestItem[] = [];
-  for (const it of items) {
+// Run fn over items with a bounded number in flight, preserving input order. A
+// big collection is staged in many small HTTP batches; within each, uploads run
+// concurrently so a batch finishes in seconds instead of minutes.
+async function mapPool<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+// Upload a batch of images to Arweave and build their ManifestItem rows.
+// Resolution everywhere is by `index` (manifestItems.find / the DB item table),
+// so the array order here never affects which buyer gets which image; finishStage
+// sorts by index for a stable manifest.
+export async function uploadItems(items: StageItem[]): Promise<ManifestItem[]> {
+  return mapPool(items, 6, async (it) => {
     const arweave_id = await uploadToArweave(it.bytes, it.mime);
     const templateJson = JSON.stringify(it.template);
-    manifestItems.push({ index: it.index, name: it.name, image_sha256: sha256(it.bytes), image_mime: it.mime, meta_sha256: sha256(templateJson), arweave_id });
-  }
+    return { index: it.index, name: it.name, image_sha256: sha256(it.bytes), image_mime: it.mime, meta_sha256: sha256(templateJson), arweave_id };
+  });
+}
+
+// Build the manifest + collection.json from already-uploaded items. Validates the
+// full index set here, so the batched path (which uploads partial batches before
+// the whole set is known) still rejects a bad set before anything is deployed.
+// The shuffle seed is generated and kept here; only its commit (sha256) is published.
+export function finishStage(spec: DeploySpec, items: ManifestItem[]): Staged {
+  validateItemIndices(items);
+  const manifestItems = [...items].sort((a, b) => a.index - b.index);
   const seed = randomBytes(32);
   const shuffleCommit = sha256(seed);
   const manifestJson = JSON.stringify({ std: "iqnft-0.1", slug: spec.slug, name: spec.name, shuffle_commit: shuffleCommit, items: manifestItems });
@@ -79,7 +104,16 @@ export async function stageCollection(spec: DeploySpec, items: StageItem[]): Pro
   // logo, and by the CLI). buildCollectionJson rebuilds it when a logo exists.
   const fallbackImage = manifestItems.length ? `${config.arweaveGateway}/${manifestItems[0].arweave_id}` : "";
   const collectionJson = buildCollectionJson(spec, fallbackImage, "");
-  return { seed, shuffleCommit, manifestHash: sha256(manifestJson), manifestJson, collectionJson, manifestItems, itemCount: items.length };
+  return { seed, shuffleCommit, manifestHash: sha256(manifestJson), manifestJson, collectionJson, manifestItems, itemCount: manifestItems.length };
+}
+
+// Upload every image to Arweave, build the manifest + collection.json in one
+// shot (the CLI and small collections). Validates indices BEFORE uploading so a
+// bad set never costs an Arweave upload. Large collections go through the batched
+// begin/batch/finish endpoints, which call uploadItems + finishStage directly.
+export async function stageCollection(spec: DeploySpec, items: StageItem[]): Promise<Staged> {
+  validateItemIndices(items);
+  return finishStage(spec, await uploadItems(items));
 }
 
 // The collection metadata JSON (the Core collection's uri points here, so
