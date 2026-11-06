@@ -3,6 +3,7 @@
 // the RPC pool; neither reaches a browser.
 
 import { Hono } from "hono";
+import {bodyLimit} from "hono/body-limit";
 import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
 import { PublicKey, Connection } from "@solana/web3.js";
@@ -21,8 +22,15 @@ import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { startTensorPoller, recentSales } from "./tensor.ts";
 import { poolStats } from "./rpcpool.ts";
+import {createPackRuntime} from './pack-runtime.ts';
+import {createPackSaleApi} from '../../extensions/trait-packs/service/sale-api.mjs';
 
 export const app = new Hono();
+// Optional runtime is created only by an explicitly configured host. Route
+// closures retain its live maps so finalized collections appear immediately.
+let packRuntime: Awaited<ReturnType<typeof createPackRuntime>> | null = null;
+let packSaleApi = createPackSaleApi(new Map());
+let jobsStarted = false;
 app.use(
   "*",
   cors({
@@ -36,6 +44,55 @@ app.use(
     },
   }),
 );
+
+// Optional routes follow the incumbent CORS middleware and remain disabled
+// until the host supplies a pinned deployment configuration.
+app.get('/wardrobe/:kind/:asset',async c=>{
+  const asset=c.req.param('asset');if(!isPubkey(asset))return c.json({error:'Invalid asset'},400);
+  try{
+    // A fresh mint may not have reached the incumbent slot mirror yet.
+    let view=await packRuntime?.viewForAsset(asset);
+    if(!view){const row=db.query('SELECT slug FROM slot WHERE asset=?1').get(asset);const col=row?getCollection(row.slug):null;view=col?packRuntime?.views.get(col.core_collection):null;}
+    if(!view)return c.json({error:'Outfits are not configured for this NFT'},404);
+    return await view.handle(c.req.raw);
+  }catch{return c.json({error:'Confirmed outfit state is temporarily unavailable'},503);}
+});
+app.all('/packs/:collection/sale',c=>packSaleApi(c.req.raw));
+app.get('/packs/:collection/state',async c=>{
+  const reader=packRuntime?.pages.get(c.req.param('collection'));
+  if(!reader)return c.json({error:'Unknown pack collection'},404);
+  const owner=c.req.query('owner');if(owner&&!isPubkey(owner))return c.json({error:'Invalid holder'},400);
+  if(rateLimited('pack-state:'+clientIp(c)))return c.json({error:'Too many history reads; retry shortly'},429);
+  const after=c.req.query('after');if(after&&!/^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(after))return c.json({error:'Invalid confirmed signature'},400);
+  const cursor=c.req.query('before');if(cursor!==undefined&&!/^[1-9][0-9]{0,14}$/.test(cursor))return c.json({error:'Invalid history cursor'},400);
+  const asset=c.req.query('asset');if(asset&&(!owner||!isPubkey(asset)))return c.json({error:'A selected NFT requires a valid holder and asset'},400);
+  if(Object.keys(c.req.query()).some(key=>!['owner','after','before','asset'].includes(key)))return c.json({error:'Unexpected state parameters'},400);
+  try{c.header('Cache-Control','no-store');return c.json(await reader.read(owner,{afterSignature:after,before:cursor===undefined?undefined:Number(cursor),asset}));}
+  catch{return c.json({error:'Confirmed pack state is temporarily unavailable'},503);}
+});
+app.get('/packs/:collection/sealed',async c=>{
+ const reader=packRuntime?.sealed.get(c.req.param('collection'));if(!reader)return c.json({error:'Unknown collection'},404);
+ if(rateLimited('sealed-read:'+clientIp(c)))return c.json({error:'Too many reads'},429);
+ const before=c.req.query('before');if(Object.keys(c.req.query()).some(key=>key!=='before')||before!==undefined&&!/^[1-9][0-9]{0,9}$/.test(before))return c.json({error:'Invalid sealed page'},400);
+ try{return c.json(await reader.read({before:before===undefined?undefined:Number(before)}));}catch{return c.json({error:'Confirmed sealed release is unavailable'},503);}
+});
+app.use('/packs/:collection/sealed/notify',bodyLimit({maxSize:2048,onError:c=>c.json({error:'Notification too large'},413)}));
+app.post('/packs/:collection/sealed/notify',async c=>{
+ const reader=packRuntime?.sealed.get(c.req.param('collection'));if(!reader)return c.json({error:'Unknown collection'},404);
+ if(rateLimited('sealed-notify:'+clientIp(c)))return c.json({error:'Too many notifications'},429);
+ if(Number(c.req.header('content-length')??0)>2048)return c.json({error:'Notification too large'},413);
+ try{const raw=await c.req.text();if(raw.length>2048)throw Error();const body=JSON.parse(raw);if(Object.keys(body).some(key=>key!=='assets'))throw Error();return c.json(await reader.notify(body.assets));}catch{return c.json({error:'Sealed assets could not be verified'},400);}
+});
+app.all('/packs/:collection/window',c=>{
+  if(!packRuntime)return c.json({error:'Sale-window requests are not configured'},404);
+  if(rateLimited('pack-window:'+clientIp(c)))return c.json({error:'Too many sale-window requests; retry shortly'},429);
+  return packRuntime.windowApi.handle(c.req.raw);
+});
+app.all('/creator/packs/:action',c=>{
+  if(!packRuntime)return c.json({error:'Trait packs are not configured'},404);
+  if(rateLimited('pack-creator:'+clientIp(c)))return c.json({error:'Too many pack creator requests; retry shortly'},429);
+  return packRuntime.creator.handle(c.req.raw);
+});
 
 let lastReconcile: ReconcileReport | null = null;
 
@@ -63,12 +120,16 @@ const clientIp = (c: any) => c.req.header("x-forwarded-for")?.split(",")[0].trim
 
 app.get("/health", (c) => c.json({ ok: true, cluster: config.cluster, programId: config.programId.toBase58() }));
 
-app.get("/c", (c) => c.json({ collections: listCollections().map(publicView) }));
+// Only a finalized runtime advertises packs. Reuses collection reads without RPC probes.
+function collectionView(col: NonNullable<ReturnType<typeof getCollection>>) {
+  return { ...publicView(col), ...(packRuntime?.pages.has(col.core_collection) ? { traitPacks: true } : {}) };
+}
+app.get("/c", (c) => c.json({ collections: listCollections().map(collectionView) }));
 
 app.get("/c/:slug", (c) => {
   const col = getCollection(c.req.param("slug"));
   if (!col) return c.json({ error: "not found" }, 404);
-  return c.json({ ...publicView(col), mintedIndices: mintedIndices(col.slug) });
+  return c.json({ ...collectionView(col), mintedIndices: mintedIndices(col.slug) });
 });
 
 // Items are public before mint (the images sit on Arweave), so the page can
@@ -516,22 +577,40 @@ app.get("/stats", (c) => {
   return c.json({ collections: listCollections().length, reservations: counts, rpcPool: poolStats(), lastReconcile });
 });
 
-export function startJobs() {
+export async function startJobs({runtimeConfig}:{runtimeConfig?:Omit<Parameters<typeof createPackRuntime>[0],'db'>}={}) {
+  if(jobsStarted)throw Error('Backend jobs are already started');
+  jobsStarted=true;
+  try{
+    if(runtimeConfig){
+      packRuntime=await createPackRuntime({...runtimeConfig,db});
+      packSaleApi=createPackSaleApi(packRuntime.sales);
+      const runtime=packRuntime;let running=false;
+      const timer=setInterval(()=>{
+        if(running)return;running=true;
+        runtime.runJobs().catch(error=>console.error('[pack jobs]',error)).finally(()=>{running=false;});
+      },config.reaperMs);
+      const stop=runtime.stop;
+      runtime.stop=async()=>{clearInterval(timer);await stop();};
+    }
+  }catch(error){jobsStarted=false;throw error;}
   setInterval(() => {
     reconcile().then((r) => (lastReconcile = r)).catch((e) => console.error("[reconciler]", e));
   }, config.reconcileMs);
   setInterval(() => {
-    reap().catch((e) => console.error("[reaper]", e));
+    Promise.all([reap(), packRuntime?.creator.reapExpired()]).catch((e) => console.error("[reaper]", e));
   }, config.reaperMs);
   startTensorPoller(); // no-op unless TENSOR_API_KEY is set and cluster is mainnet
+  return packRuntime;
 }
 
 if (import.meta.main) {
+  const { configuredPackRuntime } = await import("./pack-launch.ts");
+  const runtimeConfig = await configuredPackRuntime();
   lastReconcile = await reconcile().catch((e) => {
     console.error("[boot reconcile]", e);
     return null;
   });
-  startJobs();
+  await startJobs({ runtimeConfig });
   Bun.serve({ port: config.port, fetch: app.fetch });
   console.log(`iq-inscription-nft backend on :${config.port} (${config.cluster}, program ${config.programId.toBase58()})`);
 }

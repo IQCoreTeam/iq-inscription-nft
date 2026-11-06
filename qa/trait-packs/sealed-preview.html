@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>Sealed packs · Local review</title
+  ><style>
+    :root {
+      color-scheme: dark;
+      font-family: ui-monospace, monospace;
+      color: #e8e4d6;
+      background: #0a0c08;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      max-width: 1060px;
+      margin: auto;
+      padding: 28px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: center;
+      border-bottom: 1px solid #55584a;
+      padding-bottom: 20px;
+    }
+    small,
+    p {
+      color: #b6bba7;
+      line-height: 1.65;
+    }
+    h1 {
+      font-size: 36px;
+      margin: 0 0 14px;
+      letter-spacing: -0.04em;
+    }
+    h2 {
+      font-size: 20px;
+      margin: 40px 0 18px;
+    }
+    button,
+    input {
+      font: inherit;
+      border: 1px solid #6a705d;
+      background: transparent;
+      color: inherit;
+      border-radius: 5px;
+      padding: 12px 16px;
+    }
+    button {
+      cursor: pointer;
+    }
+    button:hover {
+      border-color: #00ef00;
+    }
+    button:focus-visible,
+    input:focus-visible {
+      outline: 2px solid #00ef00;
+      outline-offset: 3px;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: wait;
+    }
+    .primary {
+      background: #00ef00;
+      color: #071006;
+      border-color: #00ef00;
+    }
+    .active {
+      background: #e8e4d6;
+      color: #111;
+    }
+    main {
+      padding-top: 42px;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+    .hero img {
+      width: 210px;
+      max-width: 100%;
+    }
+    .price {
+      font-size: 24px;
+      color: #e8e4d6;
+    }
+    .stats {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      font-size: 13px;
+    }
+    .stats strong {
+      display: block;
+      font-size: 22px;
+      color: #e8e4d6;
+      margin-bottom: 5px;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 24px;
+    }
+    .card {
+      min-width: 0;
+      border-top: 1px solid #5b6151;
+      padding: 20px 0;
+    }
+    .card img {
+      width: 90px;
+    }
+    .card button {
+      margin: 6px 6px 0 0;
+      font-size: 12px;
+    }
+    .card input {
+      width: 110px;
+      padding: 10px;
+      font-size: 12px;
+    }
+    .empty {
+      font-size: 14px;
+    }
+    .notice {
+      padding: 18px 0;
+      min-height: 60px;
+      color: #00ef00;
+    }
+    #error {
+      color: #ffb2a3;
+    }
+    #proof {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 12px;
+    }
+    footer {
+      border-top: 1px solid #55584a;
+      margin-top: 50px;
+      padding: 20px 0;
+      font-size: 12px;
+    }
+    dialog {
+      background: #11170e;
+      color: inherit;
+      border: 1px solid #666;
+      max-width: 500px;
+      width: calc(100vw - 40px);
+      padding: 28px;
+    }
+    dialog::backdrop {
+      background: #000b;
+    }
+    @media (max-width: 650px) {
+      body {
+        padding: 20px;
+      }
+      header {
+        flex-wrap: wrap;
+      }
+      .hero {
+        grid-template-columns: 1fr;
+        gap: 24px;
+      }
+      .hero img {
+        width: 150px;
+      }
+      .cards {
+        grid-template-columns: 1fr;
+      }
+      h1 {
+        font-size: 29px;
+      }
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .loading {
+        animation: pulse 1.2s infinite alternate;
+      }
+      @keyframes pulse {
+        to {
+          opacity: 0.5;
+        }
+      }
+    }
+  </style>
+  <header>
+    <strong>IQ · Sealed packs</strong
+    ><small>LOCAL SURFPOOL · generated wallets · no real SOL</small>
+    <div id="actors">
+      <button data-actor="a" class="active">Collector A</button>
+      <button data-actor="b">Collector B</button>
+    </div>
+  </header>
+  <main>
+    <section class="hero">
+      <img src="/pack.svg" alt="Sealed local test pack" />
+      <div>
+        <h1>Keep it sealed.<br />Or see what’s inside.</h1>
+        <p>
+          Each pack is an NFT. Keep it, sell it, or open it for four traits.
+        </p>
+        <p class="price">0.105 test SOL</p>
+        <p>
+          0.10 to the creator + 0.005 IQ fee, held until delivery.<br />Network
+          fees and account rent are additional.
+        </p>
+        <button id="buy" class="primary">Buy sealed pack</button>
+        <p class="stats" id="stats"></p>
+      </div>
+    </section>
+    <div id="status" class="notice" role="status"></div>
+    <div id="error" role="alert"></div>
+    <h2>Your packs</h2>
+    <div id="owned" class="cards"></div>
+    <h2>Listed packs</h2>
+    <p>
+      Owners choose their own asking price. Scarcity does not guarantee value.
+    </p>
+    <div id="listed" class="cards"></div>
+    <h2>Your openings</h2>
+    <div id="opened" class="cards"></div>
+    <footer>
+      Opening permanently consumes the pack NFT. Rewards go to the holder who
+      opens it. A failed randomness request refunds the original prepaid price
+      to that opener, not any resale markup. This local preview uses simulated
+      oracle fulfillment and synthetic artwork.
+    </footer>
+  </main>
+  <dialog id="confirm">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-copy"></p>
+    <button id="confirm-go" class="primary">Confirm local transaction</button>
+    <button id="confirm-cancel">Cancel</button>
+  </dialog>
+  <dialog id="proof-dialog">
+    <h2>Randomness proof</h2>
+    <p id="proof"></p>
+    <button id="proof-close">Done</button>
+  </dialog>
+  <script type="module">
+    let actor = "a",
+      data,
+      busy = false,
+      watch = null;
+    const $ = (id) => document.getElementById(id);
+    const label = (owner) =>
+      owner === data.actors.a
+        ? "Collector A"
+        : owner === data.actors.b
+          ? "Collector B"
+          : "Marketplace escrow";
+    const text = (tag, value) => {
+      const el = document.createElement(tag);
+      el.textContent = value;
+      return el;
+    };
+    function button(label, action, asset, extra = {}) {
+      const b = text("button", label);
+      b.onclick = () => perform(action, asset, extra);
+      return b;
+    }
+    function render() {
+      if (!data) return;
+      for (const b of $("actors").children)
+        b.classList.toggle("active", b.dataset.actor === actor);
+      $("buy").disabled = busy || !data.release.unminted;
+      $("stats").replaceChildren(
+        ...[
+          ["Unminted", data.release.unminted],
+          ["Sealed", data.release.sealed],
+          ["Opened", data.release.opened],
+        ].map(([label, n]) => {
+          const el = text("span", label);
+          el.prepend(text("strong", n));
+          return el;
+        }),
+      );
+      for (const id of ["owned", "listed", "opened"]) $(id).replaceChildren();
+      for (const pack of data.packs) {
+        const listing = data.listings.find((x) => x.asset === pack.asset),
+          card = document.createElement("article");
+        card.className = "card";
+        card.append(text("h3", "Pack #" + (pack.serial + 1)));
+        const img = document.createElement("img");
+        img.src = pack.opened ? "/trait.svg" : "/pack.svg";
+        img.alt = pack.opened ? "Opened pack" : "Sealed pack NFT";
+        card.append(img);
+        if (pack.opened) {
+          if (pack.opener !== data.actors[actor]) continue;
+          card.append(
+            text(
+              "p",
+              pack.status === "ready"
+                ? "Four traits delivered"
+                : pack.status === "refunded"
+                  ? "Original price refunded"
+                  : "Preparing randomness…",
+            ),
+          );
+          if (pack.status === "ready")
+            card.append(button("Verify randomness", "proof", pack.asset));
+          $("opened").append(card);
+        } else if (listing) {
+          card.append(
+            text("p", listing.price + " test SOL · " + label(listing.seller)),
+          );
+          if (listing.seller === data.actors[actor])
+            card.append(button("Cancel listing", "cancel", pack.asset));
+          else
+            card.append(
+              button("Buy listed pack", "purchase", pack.asset, {
+                expectedLamports: Math.round(listing.price * 1e9),
+              }),
+            );
+          $("listed").append(card);
+        } else if (pack.owner === data.actors[actor]) {
+          card.append(
+            text("p", "Unopened · yours to keep or trade"),
+            button("Open pack", "open", pack.asset),
+          );
+          const input = document.createElement("input");
+          input.type = "number";
+          input.min = ".001";
+          input.max = "10";
+          input.step = ".001";
+          input.value = ".2";
+          input.setAttribute(
+            "aria-label",
+            "Asking price for pack " + (pack.serial + 1) + " in test SOL",
+          );
+          const list = text("button", "List pack");
+          list.onclick = () =>
+            perform("list", pack.asset, { price: Number(input.value) });
+          card.append(input, list);
+          $("owned").append(card);
+        }
+      }
+      for (const [id, message] of [
+        ["owned", "No sealed packs in this wallet."],
+        ["listed", "No packs listed yet."],
+        ["opened", "Your opened packs will appear here."],
+      ])
+        if (!$(id).children.length) $(id).append(text("p", message));
+      for (const b of document.querySelectorAll("main button"))
+        b.disabled = busy || (b.id === "buy" && !data.release.unminted);
+    }
+    async function read() {
+      const r = await fetch("/state");
+      if (!r.ok) throw Error("Cannot read the local chain");
+      data = await r.json();
+      render();
+    }
+    function confirm(action, extra) {
+      $("confirm-title").textContent = {
+        buy: "Buy a sealed pack",
+        open: "Open this pack",
+        list: "List this pack",
+        purchase: "Buy this listed pack",
+        cancel: "Cancel listing",
+      }[action];
+      $("confirm-copy").textContent =
+        action === "open"
+          ? "This consumes the pack NFT permanently. No second purchase price is charged. Four traits will go to the current holder after randomness settles."
+          : action === "buy"
+            ? "Pay 0.105 test SOL plus rent/network costs from the selected generated local wallet. You can keep or resell the pack before opening."
+            : action === "list"
+              ? "List at " +
+                extra.price +
+                " test SOL. The marketplace holds the pack while listed; cancel before opening it."
+              : action === "purchase"
+                ? "Pay " +
+                  extra.expectedLamports / 1e9 +
+                  " test SOL plus marketplace/network fees to acquire this unopened pack."
+                : "Return this pack from marketplace escrow to your local wallet.";
+      $("confirm").showModal();
+      return new Promise((resolve) => {
+        $("confirm-go").onclick = () => {
+          $("confirm").close();
+          resolve(true);
+        };
+        $("confirm-cancel").onclick = () => {
+          $("confirm").close();
+          resolve(false);
+        };
+        $("confirm").oncancel = () => resolve(false);
+      });
+    }
+    async function perform(action, asset, extra = {}) {
+      if (busy) return;
+      busy = true;
+      render();
+      if (action !== "proof" && !(await confirm(action, extra))) {
+        busy = false;
+        render();
+        return;
+      }
+      $("error").textContent = "";
+      $("status").textContent =
+        action === "proof"
+          ? "Checking draw records…"
+          : action === "open"
+            ? "Opening confirmed pack…"
+            : "Confirming local transaction…";
+      $("status").classList.add("loading");
+      try {
+        const response = await fetch("/action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action, actor, asset, ...extra }),
+          }),
+          result = await response.json();
+        if (!response.ok) throw Error(result.error);
+        if (action === "proof") {
+          $("proof").textContent =
+            "Local simulation: all four draws match.\n\n" +
+            result.draws.map((x) => x.name).join(" · ") +
+            "\n\nOracle request: " +
+            result.request +
+            "\nResult hash: " +
+            result.resultHash +
+            "\n\nThis checks simulated local records, not live oracle signatures.";
+          $("proof-dialog").showModal();
+        } else {
+          data = result;
+          render();
+        }
+        $("status").textContent =
+          action === "open"
+            ? "Preparing randomness. Your pack has been consumed; delivery will continue automatically."
+            : "Confirmed on the local chain.";
+        if (action === "open") follow();
+      } catch (e) {
+        $("error").textContent = e.message;
+        $("status").textContent = "Nothing will be retried automatically.";
+      } finally {
+        busy = false;
+        $("status").classList.remove("loading");
+        render();
+      }
+    }
+    function follow() {
+      clearTimeout(watch);
+      let reads = 0;
+      const tick = async () => {
+        try {
+          await read();
+          const pending = data.packs.some(
+            (p) =>
+              p.opened &&
+              p.opener === data.actors[actor] &&
+              p.status === "preparing",
+          );
+          if (!pending) {
+            $("status").textContent =
+              "Your opening is complete. Check your openings below.";
+            return;
+          }
+          if (++reads < 30) watch = setTimeout(tick, 2000);
+          else
+            $("status").textContent =
+              "Delivery is still pending. Reload to check; do not open again.";
+        } catch (e) {
+          $("error").textContent = e.message;
+        }
+      };
+      watch = setTimeout(tick, 2000);
+    }
+    $("buy").onclick = () => perform("buy");
+    $("actors").onclick = (e) => {
+      if (e.target.dataset.actor && !busy) {
+        actor = e.target.dataset.actor;
+        render();
+      }
+    };
+    $("proof-close").onclick = () => $("proof-dialog").close();
+    read().catch((e) => ($("error").textContent = e.message));
+    window.addEventListener("pagehide", () => clearTimeout(watch));
+  </script>
+</html>

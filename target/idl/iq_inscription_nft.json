@@ -8,6 +8,119 @@
   },
   "instructions": [
     {
+      "name": "attach_wardrobe_oracle",
+      "docs": [
+        "Explicit creator and current-holder opt-in. This adds only an immutable",
+        "burn rejection hook; it never delegates transfer or edits base metadata."
+      ],
+      "discriminator": [
+        230,
+        207,
+        145,
+        128,
+        184,
+        81,
+        248,
+        216
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "registry.collection",
+                "account": "Registry"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset",
+          "writable": true
+        },
+        {
+          "name": "collection",
+          "writable": true
+        },
+        {
+          "name": "collection_auth",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  108,
+                  108,
+                  101,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "registry"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle_program"
+        },
+        {
+          "name": "loadout"
+        },
+        {
+          "name": "wardrobe_pool"
+        },
+        {
+          "name": "mpl_core_program",
+          "address": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initialize_registry",
       "discriminator": [
         189,
@@ -140,6 +253,159 @@
         {
           "name": "treasury",
           "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "opt_in_wardrobe_metadata",
+      "docs": [
+        "Both the creator and the asset's current holder approve a derived view.",
+        "The original inscription Attributes, name and owner remain unchanged."
+      ],
+      "discriminator": [
+        181,
+        39,
+        73,
+        72,
+        166,
+        238,
+        76,
+        245
+      ],
+      "accounts": [
+        {
+          "name": "update",
+          "accounts": [
+            {
+              "name": "admin",
+              "writable": true,
+              "signer": true,
+              "relations": [
+                "registry"
+              ]
+            },
+            {
+              "name": "registry",
+              "pda": {
+                "seeds": [
+                  {
+                    "kind": "const",
+                    "value": [
+                      114,
+                      101,
+                      103,
+                      105,
+                      115,
+                      116,
+                      114,
+                      121
+                    ]
+                  },
+                  {
+                    "kind": "account",
+                    "path": "registry.collection",
+                    "account": "Registry"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "asset",
+              "writable": true
+            },
+            {
+              "name": "inscription_record"
+            },
+            {
+              "name": "collection",
+              "writable": true
+            },
+            {
+              "name": "collection_auth",
+              "pda": {
+                "seeds": [
+                  {
+                    "kind": "const",
+                    "value": [
+                      99,
+                      111,
+                      108,
+                      108,
+                      101,
+                      99,
+                      116,
+                      105,
+                      111,
+                      110,
+                      45,
+                      97,
+                      117,
+                      116,
+                      104
+                    ]
+                  },
+                  {
+                    "kind": "account",
+                    "path": "registry"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "mpl_core_program",
+              "address": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+            },
+            {
+              "name": "system_program",
+              "address": "11111111111111111111111111111111"
+            }
+          ]
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "recovery",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  119,
+                  97,
+                  114,
+                  100,
+                  114,
+                  111,
+                  98,
+                  101,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "update.asset",
+                "account": "UpdateAssetUri"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_uri",
+          "type": "string"
         }
       ]
     },
@@ -439,6 +705,131 @@
           "type": "string"
         }
       ]
+    },
+    {
+      "name": "restore_wardrobe_metadata",
+      "docs": [
+        "Restores only the immutable pre-opt-in URI, authorized by today's owner."
+      ],
+      "discriminator": [
+        213,
+        224,
+        74,
+        196,
+        236,
+        227,
+        152,
+        40
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "registry.collection",
+                "account": "Registry"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset",
+          "writable": true
+        },
+        {
+          "name": "recovery",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  119,
+                  97,
+                  114,
+                  100,
+                  114,
+                  111,
+                  98,
+                  101,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset"
+              }
+            ]
+          }
+        },
+        {
+          "name": "collection",
+          "writable": true
+        },
+        {
+          "name": "collection_auth",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  108,
+                  108,
+                  101,
+                  99,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "registry"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mpl_core_program",
+          "address": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "rotate_registrar",
@@ -945,6 +1336,19 @@
         252,
         218
       ]
+    },
+    {
+      "name": "WardrobeMetadataRecovery",
+      "discriminator": [
+        189,
+        63,
+        248,
+        176,
+        207,
+        233,
+        38,
+        58
+      ]
     }
   ],
   "errors": [
@@ -1012,6 +1416,11 @@
       "code": 6012,
       "name": "NotASingleRegistry",
       "msg": "register_single needs a registry with max_supply 0"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidWardrobePolicy",
+      "msg": "wardrobe policy is not a valid empty program-owned loadout"
     }
   ],
   "types": [
@@ -1152,6 +1561,26 @@
           {
             "name": "percentage",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "WardrobeMetadataRecovery",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset",
+            "type": "pubkey"
+          },
+          {
+            "name": "collection",
+            "type": "pubkey"
+          },
+          {
+            "name": "original_uri",
+            "type": "string"
           }
         ]
       }

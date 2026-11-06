@@ -17,7 +17,7 @@ no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
-anchor-lang = "0.32.1"
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 # Exact pin: 0.12.x targets the solana v3 crates and does not compile against
 # anchor 0.32; 0.10.x fails on borsh.
 mpl-core = "=0.11.2"

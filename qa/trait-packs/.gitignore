@@ -1,0 +1,12 @@
+node_modules/
+.evidence/
+inputs/
+*.so
+*-keypair.json
+.env
+.env.*
+keypairs/
+snapshots/
+.cache/
+*.sqlite
+*.sqlite-*

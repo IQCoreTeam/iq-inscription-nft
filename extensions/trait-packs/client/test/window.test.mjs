@@ -1,0 +1,12 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import{Keypair}from'@solana/web3.js';import nacl from'tweetnacl';
+import{requestPackWindow}from'../window.mjs';import{packWindowMessage}from'../window-message.mjs';
+function fixture(t,mode){
+ const pair=Keypair.generate(),program=Keypair.generate().publicKey.toBase58(),collection=Keypair.generate().publicKey.toBase58(),account={address:pair.publicKey.toBase58(),publicKey:pair.publicKey.toBytes(),chains:['solana:devnet'],features:['solana:signMessage']},chain='solana:devnet',endpoint='https://nft.example/packs/'+collection+'/window';let prompts=0,posts=[];
+ const wallet={accounts:[account],features:{'solana:signMessage':{async signMessage({message}){prompts++;if(mode==='switch')wallet.accounts=[];const signedMessage=mode==='message'?new TextEncoder().encode('other terms'):message;return[{signedMessage,signature:nacl.sign.detached(signedMessage,pair.secretKey)}];}}}};
+ const previous=global.fetch;t.after(()=>global.fetch=previous);global.fetch=async(_,options)=>{const body=JSON.parse(options.body);posts.push(body);if(body.signature)return Response.json({accepted:true});const challenge={origin:'https://nft.example',chain,program,collection,owner:account.address,nonce:'a'.repeat(64),expiresAt:Date.now()+60000};if(mode==='program')challenge.program=Keypair.generate().publicKey.toBase58();return Response.json({challenge,message:packWindowMessage(challenge)});};
+ return{run:()=>requestPackWindow({wallet,account,chain,program,collection,endpoint}),prompts:()=>prompts,posts};
+}
+test('sale-window request signs exact domain/network/deployment-bound intent without a transaction',async t=>{const f=fixture(t);assert.equal((await f.run()).accepted,true);assert.equal(f.prompts(),1);assert.equal(f.posts.length,2);assert.ok(f.posts[1].signature);});
+test('unreviewed deployment never reaches a wallet prompt',async t=>{const f=fixture(t,'program');await assert.rejects(f.run,/terms changed/);assert.equal(f.prompts(),0);assert.equal(f.posts.length,1);});
+test('changed signed message is never sent to the operator',async t=>{const f=fixture(t,'message');await assert.rejects(f.run,/different message approval/);assert.equal(f.posts.length,1);});
+test('account removal during approval stops the operator request',async t=>{const f=fixture(t,'switch');await assert.rejects(f.run,/Wallet changed/);assert.equal(f.posts.length,1);});
