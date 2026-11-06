@@ -14,9 +14,13 @@
     "@metaplex-foundation/umi": "1.0.0",
     "@metaplex-foundation/umi-bundle-defaults": "1.0.0",
     "@metaplex-foundation/umi-web3js-adapters": "1.0.0",
+    "@noble/hashes": "1.8.0",
+    "@orao-network/solana-vrf": "0.8.0",
     "@solana/web3.js": "1.99.0",
     "bn.js": "^5.2.1",
+    "bs58": "6.0.0",
     "hono": "^4.13.7",
+    "sharp": "0.35.5",
     "tsx": "4.20.5",
     "tweetnacl": "^1.0.3",
     "typescript": "5.9.2"

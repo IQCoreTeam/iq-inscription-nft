@@ -39,6 +39,11 @@ function fixture() {
     requester = null;
   const connection = {
     getGenesisHash: async () => "pinned",
+    getMinimumBalanceForRentExemption: async (size, commitment) => {
+      assert.equal(size, 749);
+      assert.equal(commitment, "confirmed");
+      return 6000000;
+    },
     getMultipleAccountsInfoAndContext: async (queried) =>
       queried[0].equals(keys.pool)
         ? {
@@ -140,6 +145,13 @@ test("new window instruction uses new epoch and proves the previous terminal epo
   );
   assert(instruction.keys[4].pubkey.equals(f.keys.epoch));
   assert(instruction.keys[5].pubkey.equals(f.keys.requester));
+
+  f.config.connection.getMinimumBalanceForRentExemption = async () => 9_000_001;
+  await assert.rejects(
+    () => market.buildSigned({ kind: "open" }, state),
+    /fee and pending account rent/,
+  );
+  assert.equal(f.simulated, 1);
 });
 
 test("wrong network and collection reject before operator signing", async () => {
@@ -181,6 +193,23 @@ test("changed provider config blocks new requests without blocking owed refunds"
       .instructions[1].data[0],
     7,
   );
+});
+
+test("request funding includes rent before signing a provider request", async () => {
+  const f = fixture();
+  f.epoch[48] = 2;
+  f.config.requestFundingLamports = 6_999_999;
+  const underfunded = createPackOperatorMarket(f.config);
+  await assert.rejects(
+    async () => underfunded.buildSigned({ kind: "request" }, await underfunded.readState()),
+    /fee and pending account rent/,
+  );
+  assert.equal(f.simulated, 0);
+
+  f.config.requestFundingLamports = 7_000_000;
+  const covered = createPackOperatorMarket(f.config);
+  await covered.buildSigned({ kind: "request" }, await covered.readState());
+  assert.equal(f.simulated, 1);
 });
 test("provider state uses the SDK V2 API and binds seed plus requester", async () => {
   const f = fixture();

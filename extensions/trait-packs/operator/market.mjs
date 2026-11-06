@@ -24,6 +24,9 @@ import { nextEpochTask } from "./epoch-task.mjs";
 
 const ORAO = new PublicKey("VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y");
 const CORE = new PublicKey("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
+// ORAO Solana VRF 0.8.0 RequestV2 allocates 8 discriminator bytes, one
+// pending tag, the client and seed, and a vector with room for seven responses.
+const ORAO_REQUEST_ACCOUNT_SIZE = 8 + 1 + 32 + 32 + 4 + 7 * (32 + 64);
 const requestAddress = (seed) =>
   PublicKey.findProgramAddressSync(
     [Buffer.from("orao-vrf-randomness-request"), seed],
@@ -33,6 +36,31 @@ const network = PublicKey.findProgramAddressSync(
   [Buffer.from("orao-vrf-network-configuration")],
   ORAO,
 )[0];
+
+function assertOraoConfig(vrf, requestFundingLamports) {
+  if (
+    !vrf.programId.equals(ORAO) ||
+    !Number.isSafeInteger(requestFundingLamports) ||
+    requestFundingLamports <= 0 ||
+    requestFundingLamports > PROVIDER_RESERVE_LAMPORTS
+  )
+    throw Error("Invalid pinned ORAO operator configuration or request funding");
+}
+
+export async function assertOraoRequestFunding(connection, vrf, treasury, funding) {
+  assertOraoConfig(vrf, funding);
+  const { config } = await vrf.getNetworkState("confirmed");
+  const fee = BigInt(config.requestFee.toString());
+  if (!config.treasury.equals(treasury) || fee < 0n || !config.fulfillmentAuthorities?.length)
+    throw Error("ORAO configuration differs from the funded pack pool");
+
+  const rent = await connection.getMinimumBalanceForRentExemption(
+    ORAO_REQUEST_ACCOUNT_SIZE,
+    "confirmed",
+  );
+  if (!Number.isSafeInteger(rent) || rent < 0 || BigInt(funding) < fee + BigInt(rent))
+    throw Error("ORAO request funding must cover the live fee and pending account rent");
+}
 
 // Host supplies its existing operator signer and ORAO SDK instance. The buyer
 // never signs here. This adapter constructs and simulates; only the durable
@@ -48,13 +76,7 @@ export function createPackOperatorMarket({
 }) {
   program = new PublicKey(program);
   collection = new PublicKey(collection);
-  if (
-    !vrf.programId.equals(ORAO) ||
-    !Number.isSafeInteger(requestFundingLamports) ||
-    requestFundingLamports <= 0 ||
-    requestFundingLamports > PROVIDER_RESERVE_LAMPORTS
-  )
-    throw Error("Invalid pinned ORAO operator configuration");
+  assertOraoConfig(vrf, requestFundingLamports);
   const keys = addresses(program, collection),
     operator = new PublicKey(signer.publicKey);
   let saleDemandUntil = 0,
@@ -161,6 +183,7 @@ export function createPackOperatorMarket({
     let instruction;
     switch (task.kind) {
       case "open": {
+        await assertOraoRequestFunding(connection, vrf, pool.providerTreasury, requestFundingLamports);
         const next = addresses(program, collection, pool.epochCount);
         // Recovery and new-window proof share one atomic transaction. A late
         // requester donation cannot strand sponsor funds or race the zero check.
@@ -179,16 +202,7 @@ export function createPackOperatorMarket({
         instruction = ix(program, 3, [a(keys.pool), a(k.epoch, true)]);
         break;
       case "request": {
-        const live = await vrf.getNetworkState("confirmed"),
-          configuration = live.config;
-        const fee = BigInt(configuration.requestFee.toString());
-        if (
-          !configuration.treasury.equals(pool.providerTreasury) ||
-          fee < 0n ||
-          fee >= BigInt(requestFundingLamports) ||
-          !configuration.fulfillmentAuthorities?.length
-        )
-          throw Error("ORAO configuration differs from the funded pack pool");
+        await assertOraoRequestFunding(connection, vrf, pool.providerTreasury, requestFundingLamports);
         const nonce = randomBytes(32),
           seed = candidateRequestSeed(
             epoch.seed,

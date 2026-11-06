@@ -13,7 +13,10 @@ import { createPackCreator } from "./pack-creator.ts";
 import { createPackJobStore, runPackJobs } from "./pack-jobs.ts";
 import { createPackWindowApi } from "./pack-window.ts";
 import { createWardrobeReader } from "../../extensions/trait-packs/client/state.mjs";
-import { createPackOperatorMarket } from "../../extensions/trait-packs/operator/market.mjs";
+import {
+  assertOraoRequestFunding,
+  createPackOperatorMarket,
+} from "../../extensions/trait-packs/operator/market.mjs";
 import {
   createPackPageStateReader,
 } from "../../extensions/trait-packs/service/pack-state.mjs";
@@ -124,16 +127,12 @@ export async function createPackRuntime(options: {
     throw Error(
       "Native pack and NFT programs must be deployed executable accounts",
     );
-  const providerState = await options.vrf.getNetworkState("confirmed");
-  if (
-    providerState.config.treasury.toBase58() !==
-      new PublicKey(options.providerTreasury).toBase58() ||
-    BigInt(providerState.config.requestFee.toString()) >=
-      BigInt(options.requestFundingLamports)
-  )
-    throw Error(
-      "Native provider treasury or request funding does not match the reviewed config",
-    );
+  await assertOraoRequestFunding(
+    connection,
+    options.vrf,
+    new PublicKey(options.providerTreasury),
+    options.requestFundingLamports,
+  );
   const umi = createUmi(connection.rpcEndpoint).use(core.mplCore());
   const artifacts = new Map<string, any>(),
     coreCache = new Map<string, any>();

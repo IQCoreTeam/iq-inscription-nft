@@ -507,11 +507,13 @@ export async function startJobs({runtimeConfig}:{runtimeConfig?:Omit<Parameters<
 }
 
 if (import.meta.main) {
+  const { configuredPackRuntime } = await import("./pack-launch.ts");
+  const runtimeConfig = await configuredPackRuntime();
   lastReconcile = await reconcile().catch((e) => {
     console.error("[boot reconcile]", e);
     return null;
   });
-  await startJobs();
+  await startJobs({ runtimeConfig });
   Bun.serve({ port: config.port, fetch: app.fetch });
   console.log(`iq-inscription-nft backend on :${config.port} (${config.cluster}, program ${config.programId.toBase58()})`);
 }

@@ -74,23 +74,37 @@ export async function publishKitArtifacts(
         checkpoint.pending.sha256 !== expected
       )
         throw Error("Another inscription outcome needs recovery first");
-      if (!checkpoint.pending.signature)
-        throw Error(
-          "Previous write outcome is unknown; recover its receipt before retrying",
+      const receipt = checkpoint.pending.signature ?? context.recoveredSignature;
+      if (!receipt)
+        throw Object.assign(
+          Error("Previous write outcome is unknown. Enter the confirmed inscription signature to resume."),
+          { code: "PACK_MEDIA_RECEIPT_REQUIRED" },
         );
-      sig = signature(checkpoint.pending.signature);
+      sig = signature(receipt);
+      if (!checkpoint.pending.signature) {
+        const status = (await context.connection.getSignatureStatuses([sig], {
+          searchTransactionHistory: true,
+        })).value[0];
+        if (!status || status.err || !["confirmed", "finalized"].includes(status.confirmationStatus))
+          throw Error("The supplied inscription signature is not confirmed on this network");
+      }
     } else {
+      await context.beforeWrite?.();
       checkpoint.pending = { key, sha256: expected };
       await context.saveCheckpoint(checkpoint);
       // If this throws, pending stays set. Never silently repeat an ambiguous write.
       try {
         sig = signature(await context.writeArtifact(bytes, name));
       } catch (error) {
-        if (error.signature) {
+        if (error?.signature) {
           checkpoint.pending.signature = signature(error.signature);
           await context.saveCheckpoint(checkpoint);
         }
-        throw error;
+        if (checkpoint.pending.signature) throw error;
+        throw Object.assign(
+          Error("Previous write outcome is unknown. Enter the confirmed inscription signature to resume.", { cause: error }),
+          { code: "PACK_MEDIA_RECEIPT_REQUIRED" },
+        );
       }
       checkpoint.pending.signature = sig;
       await context.saveCheckpoint(checkpoint);

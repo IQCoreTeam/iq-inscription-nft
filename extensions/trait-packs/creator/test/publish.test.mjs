@@ -37,3 +37,35 @@ test('a thrown writer receipt is persisted and recovered without duplicate inscr
   await publishRenderKit(f.kit,f.root,f.context,checkpoint);assert.equal(f.state.writes,6);
  }finally{await f.stop();}
 });
+
+test('a recovered receipt must be confirmed and match the pending bytes before publication resumes', async () => {
+ const f = await fixture();
+ try {
+  const checkpoint = {};
+  const write = f.context.writeArtifact;
+  let recovered;
+  f.context.writeArtifact = async (...args) => {
+   recovered = await write(...args);
+   throw Error('Response lost after broadcast');
+  };
+  await assert.rejects(publishRenderKit(f.kit, f.root, f.context, checkpoint), {code:'PACK_MEDIA_RECEIPT_REQUIRED'});
+  f.context.writeArtifact = write;
+  f.context.recoveredSignature = recovered;
+  f.context.connection.getSignatureStatuses = async () => ({value:[null]});
+  await assert.rejects(publishRenderKit(f.kit, f.root, f.context, checkpoint), /not confirmed/);
+  f.context.connection.getSignatureStatuses = async () => ({value:[{confirmationStatus:'confirmed',err:null}]});
+  const wrong = bs58.encode(randomBytes(64));
+  f.objects.set(wrong, Buffer.from('wrong bytes'));
+  f.context.recoveredSignature = wrong;
+  await assert.rejects(publishRenderKit(f.kit, f.root, f.context, checkpoint), /bytes did not match/);
+  assert.equal(f.state.writes, 1);
+  assert.equal(checkpoint.pending.signature, undefined);
+  f.context.recoveredSignature = recovered;
+  const result = await publishRenderKit(f.kit, f.root, f.context, checkpoint);
+  assert.equal(result.artifacts, 6);
+  assert.equal(f.state.writes, 6);
+  assert.equal(checkpoint.pending, undefined);
+ } finally {
+  await f.stop();
+ }
+});

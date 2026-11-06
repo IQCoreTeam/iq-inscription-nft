@@ -12,15 +12,19 @@ WORKDIR /app
 # Root dependencies (hono, solana web3, anchor, metaplex umi, iqlabs sdk). The
 # umi pins in package.json "overrides" are load-bearing (1.0.0). Module
 # resolution walks backend/node_modules then /app/node_modules, same as the repo.
-COPY package.json ./
-RUN bun install
+COPY package.json package-lock.json ./
+RUN bun install --frozen-lockfile
 
 # Backend-local dependency (irys upload), kept under backend/ like the repo.
 COPY backend/package.json backend/bun.lock ./backend/
-RUN cd backend && bun install
+RUN cd backend && bun install --frozen-lockfile
 
 # Application code.
 COPY backend/src ./backend/src
+COPY extensions/trait-packs/client/*.mjs ./extensions/trait-packs/client/
+COPY extensions/trait-packs/creator/*.mjs ./extensions/trait-packs/creator/
+COPY extensions/trait-packs/operator/*.mjs ./extensions/trait-packs/operator/
+COPY extensions/trait-packs/service/*.mjs ./extensions/trait-packs/service/
 
 # Baked-in public data: config.ts reads the IDL from REPO_ROOT/target/idl.
 COPY target/idl ./target/idl

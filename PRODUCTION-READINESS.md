@@ -1,6 +1,6 @@
 # Optional sealed trait packs — local readiness
 
-Reviewed November 3, 2026. Backend source starts at draft #6 `bacc6e8a`; paired frontend starts at draft #15 `8a3da5aa`. These are optional review branches, not a production deployment. Ordinary collections remain independent.
+Local review, November 5, 2026. Backend draft #6 is at `219d421` and paired frontend draft #15 is at `1d63fe1`. The local follow-up adds startup, image packaging and provider funding checks for the optional feature.
 
 ## Implemented local product
 
@@ -27,6 +27,25 @@ No independent marketplace is required for pack checkout, opening or outfit mana
 3. Publish each collection's final reviewed trait layers, masks, metadata and recovery recipe to permanent IQ storage; configure reachable gateways and verify readback. Nubbies artwork remains private and unfinished.
 4. Test physical extension/mobile wallets, live provider/operator recovery and external marketplace transfer/indexing behavior. Local generated-wallet tests do not establish these.
 5. Review final source and evidence before updating drafts. No deployment, mainnet spending, private art or personal keys are authorized by this document.
+
+### Runtime configuration
+
+The normal backend starts with packs disabled. To activate packs on an approved deployment, mount an operator keypair separately from the NFT registrar and set `PACK_OPERATOR_KEYPAIR` to its absolute path. Set `PACK_RUNTIME_CONFIG` to the absolute path of a mounted JSON file with the following reviewed values:
+
+| Field | Value to review |
+| --- | --- |
+| `program` | Deployed pack program ID and verified upgrade authority |
+| `providerTreasury` | Treasury read from the ORAO deployment |
+| `origin`, `requestOrigins` | Exact backend origin and HTTPS browser origins |
+| `stagingRoot`, `renderRoot` | Absolute paths on storage writable by the backend |
+| `window`, `timeout` | Approved sale window and provider timeout, in slots |
+| `operationsReserveLamports` | Creator reserve target, with the contract enforcing per-pack collateral |
+| `requestFundingLamports` | Per-request budget covering the current provider fee and pending-account rent |
+| `maxWindowsPerDay` | Operator window budget from 1 to 32 |
+
+The backend uses the existing cluster's RPC, gateway and NFT program. Startup checks the RPC genesis, executable programs and provider terms. The operator checks fee and rent before signing new windows or randomness requests. Monitor pending requests and verify recovery on a second RPC with the same genesis before activation.
+
+If a media write fails without a transaction signature, publication preserves its checkpoint and stops. Resolve the transaction outcome before starting a replacement publication. The creator can resume by supplying a confirmed signature whose bytes match the interrupted inscription.
 
 ## Deferred features
 

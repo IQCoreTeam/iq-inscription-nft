@@ -321,20 +321,32 @@ try {
     }),
     /source publication/,
   );
-  await publishKitArtifacts(
-    checked.publicationKit,
-    (name: string) => readFile(kit.root + "/" + name),
-    {
-      gateway: origin,
-      connection: f.connection,
-      expectedGenesis: genesis,
-      owner: f.creator.publicKey.toBase58(),
-      writeArtifact,
-      readArtifact: runtime.readArtifact,
-      saveCheckpoint: async () => {},
+  const publicationContext = {
+    gateway: origin,
+    connection: f.connection,
+    expectedGenesis: genesis,
+    owner: f.creator.publicKey.toBase58(),
+    writeArtifact,
+    readArtifact: runtime.readArtifact,
+    saveCheckpoint: async () => {},
+  };
+  const readSource = (name: string) => readFile(kit.root + "/" + name);
+  let recoveredSignature: string | undefined;
+  await assert.rejects(() => publishKitArtifacts(checked.publicationKit, readSource, {
+    ...publicationContext,
+    async writeArtifact(bytes: Uint8Array, name: string) {
+      recoveredSignature = await writeArtifact(bytes, name);
+      throw Error("Simulated lost response after the confirmed inscription");
     },
-    checkpoint,
-  );
+  }, checkpoint), { code: "PACK_MEDIA_RECEIPT_REQUIRED" });
+  assert(recoveredSignature);
+  const recoveredKey = checkpoint.pending.key;
+  await publishKitArtifacts(checked.publicationKit, readSource, {
+    ...publicationContext,
+    recoveredSignature,
+  }, checkpoint);
+  assert.equal(checkpoint.artifacts[recoveredKey].signature, recoveredSignature);
+  report.scenarios.push("resume-publication-with-confirmed-inscription-receipt");
   const body = {
       draftId: checked.draftId,
       owner: f.creator.publicKey.toBase58(),

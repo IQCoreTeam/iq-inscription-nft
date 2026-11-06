@@ -485,8 +485,8 @@ export function createPackCreator(options: {
       throw fault("Browser publication receipts are required");
     if (Buffer.byteLength(JSON.stringify(checkpoint)) > 250_000)
       throw fault("Publication receipts exceed their bound");
-    // A missing or unknown artifact calls writeArtifact and therefore rejects;
-    // this finalizer can read receipts but cannot inscribe on anyone's behalf.
+    // The finalizer only reads receipts. A missing receipt rejects before any
+    // write is started or recorded as pending.
     const published = await publishRenderKit(
       kit,
       path.join(root, row.id),
@@ -496,7 +496,7 @@ export function createPackCreator(options: {
         expectedGenesis: options.expectedGenesis,
         owner: row.owner,
         saveCheckpoint: async () => {},
-        writeArtifact: async () => {
+        beforeWrite: async () => {
           throw fault("Browser publication is incomplete");
         },
         readArtifact: options.readArtifact,

@@ -13,15 +13,21 @@ async function fixture() {
   const db = new Database(":memory:"),
     root = await mkdtemp(path.join(tmpdir(), "native-pack-runtime-")),
     operator = Keypair.generate(),
-    provider = Keypair.generate().publicKey,
+    provider = new PublicKey("VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y"),
     treasury = Keypair.generate().publicKey;
   let genesis = "local-genesis",
     executable = true,
-    fee = 100;
+    fee = 100,
+    rent = 500;
   const connection = {
     rpcEndpoint: "http://127.0.0.1:8899",
     getGenesisHash: async () => genesis,
     getMultipleAccountsInfo: async () => [{ executable }, { executable }],
+    getMinimumBalanceForRentExemption: async (size: number, commitment: string) => {
+      expect(size).toBe(749);
+      expect(commitment).toBe("confirmed");
+      return rent;
+    },
   };
   setRpcUrl(connection.rpcEndpoint);
   const options = {
@@ -35,7 +41,9 @@ async function fixture() {
     },
     vrf: {
       programId: provider,
-      getNetworkState: async () => ({ config: { treasury, requestFee: fee } }),
+      getNetworkState: async () => ({
+        config: { treasury, requestFee: fee, fulfillmentAuthorities: [operator.publicKey] },
+      }),
     },
     chain: "solana:localnet" as const,
     expectedGenesis: genesis,
@@ -55,6 +63,7 @@ async function fixture() {
     setGenesis: (value: string) => (genesis = value),
     setExecutable: (value: boolean) => (executable = value),
     setFee: (value: number) => (fee = value),
+    setRent: (value: number) => (rent = value),
     async close() {
       setRpcUrl(previousReaderRpc);
       db.close();
@@ -126,8 +135,11 @@ test("native startup rejects ambiguous origins, unsupported clusters, undeployed
     f.setExecutable(false);
     await expect(createPackRuntime(f.options)).rejects.toThrow("executable");
     f.setExecutable(true);
-    f.setFee(1000);
-    await expect(createPackRuntime(f.options)).rejects.toThrow("funding");
+    f.setFee(600);
+    await expect(createPackRuntime(f.options)).rejects.toThrow("fee and pending account rent");
+    f.setRent(400);
+    const runtime = await createPackRuntime(f.options);
+    await runtime.stop();
   } finally {
     await f.close();
   }
