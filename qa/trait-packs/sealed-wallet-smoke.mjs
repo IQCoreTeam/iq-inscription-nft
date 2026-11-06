@@ -22,7 +22,11 @@ globalThis.fetch = (url, options = {}) => {
 };
 const config = await (await fetch(origin + "/qa/config")).json();
 assert.equal(new URL(config.rpc).hostname, "127.0.0.1");
-const connection = new Connection(config.rpc, "confirmed"),
+assert.equal(new URL(config.wsEndpoint).hostname, "127.0.0.1");
+const connection = new Connection(config.rpc, {
+    commitment: "confirmed",
+    wsEndpoint: config.wsEndpoint,
+  }),
   prefix = origin + "/packs/" + config.collection;
 async function post(path, body) {
   const r = await fetch(origin + path, {
