@@ -1,7 +1,13 @@
-// Secondary-market sales, read from Tensor. Read-only and mainnet-scoped: the
-// API key is rejected by the devnet host, so the poller only runs on mainnet.
-// Everything here is a cache over on-chain sales; it never signs or spends, and
-// the key stays in this process (never reaches a browser).
+// Secondary market, read from Tensor. Read-only and mainnet-scoped: the API key
+// is rejected by the devnet host, so the poller only runs on mainnet. Everything
+// here is a cache over on-chain activity; it never signs or spends, and the key
+// stays in this process (never reaches a browser).
+//
+// One tx_history call per collection feeds both views. Sales (the recent feed)
+// are the SALE rows; active listings are reconstructed by walking the history
+// newest-first and keeping each mint's latest state when it is a live LIST. The
+// dedicated /listings endpoint is Tensor-swap only and misses Magic Eden asks,
+// so tx_history (which spans every marketplace) is the source of truth.
 import { config } from "./config";
 import { db, nowSec } from "./db";
 import { listCollections } from "./collections";
@@ -19,55 +25,47 @@ async function tj(path: string): Promise<any | null> {
   }
 }
 
-// A minted NFT mint -> its Tensor collection. `collections/mints` returns, per
-// mint, the collection object; `id` is the collId that tx_history takes and
-// `slug` is what the /listings endpoint keys on, so we keep both. Verified
-// against live mainnet data.
-async function resolveColl(itemMint: string): Promise<{ id: string | null; slug: string | null }> {
+// A minted NFT mint -> its Tensor collId (tx_history's key). `/collections/mints`
+// returns, per mint, the collection `{ id, name, verifiedCollection }`; `id` is
+// the collId. Verified against live mainnet data.
+async function resolveCollId(itemMint: string): Promise<string | null> {
   const a = await tj(`/collections/mints?${new URLSearchParams({ mints: itemMint })}`);
-  const c = Array.isArray(a) ? a[0] : null;
-  return { id: c?.id != null ? String(c.id) : null, slug: c?.slug != null ? String(c.slug) : null };
+  const id = Array.isArray(a) ? a[0]?.id : null;
+  return id != null ? String(id) : null;
 }
 
-type ParsedSale = { txId: string; mint: string; price: number; buyer: string | null; seller: string | null; source: string | null; blockTime: number };
+type HistTx = { txId: string; mint: string; type: string; price: number; buyer: string | null; seller: string | null; source: string | null; blockTime: number; listingEnd: number };
 
-async function fetchSales(collId: string, limit = 50): Promise<ParsedSale[]> {
+// Recent state-changing txs across every marketplace, newest first. Bids are
+// excluded; they do not change a listing's state.
+async function fetchHistory(collId: string, limit = 200): Promise<HistTx[]> {
   const qs = new URLSearchParams({ collId, limit: String(limit) });
-  qs.append("txTypes", "SALE_BUY_NOW");
-  qs.append("txTypes", "SALE_ACCEPT_BID");
+  for (const t of ["LIST", "DELIST", "ADJUST_PRICE", "SALE_BUY_NOW", "SALE_ACCEPT_BID"]) qs.append("txTypes", t);
   const j = await tj(`/collections/tx_history?${qs}`);
   const txs: any[] = j?.txs ?? [];
+  const secs = (v: any) => (v ? Math.floor(new Date(v).getTime() / 1000) : 0);
   return txs
     .map((t) => {
       const tx = t.tx ?? {};
-      const at = tx.txAt ? Math.floor(new Date(tx.txAt).getTime() / 1000) : 0;
+      const at = secs(tx.txAt);
+      const end = secs(tx.listingEnd);
       return {
         txId: String(tx.txId ?? tx.txKey ?? ""),
         mint: String(tx.mintOnchainId ?? t.mint?.onchainId ?? ""),
+        type: String(tx.txType ?? ""),
         price: Math.round(Number(tx.grossAmount ?? 0)), // lamports
         buyer: tx.buyerId ?? null,
         seller: tx.sellerId ?? null,
         source: tx.source ?? null,
         blockTime: Number.isFinite(at) ? at : 0,
-      } as ParsedSale;
+        listingEnd: Number.isFinite(end) ? end : 0,
+      } as HistTx;
     })
-    .filter((s) => s.txId && s.mint && s.price > 0);
-}
-
-type ParsedListing = { mint: string; price: number; seller: string | null; source: string | null };
-
-// Active listings for a collection. The endpoint keys on the Tensor slug and
-// returns a bare array; price is a lamport string, owner is the seller.
-async function fetchListings(slug: string, limit = 100): Promise<ParsedListing[]> {
-  const j = await tj(`/listings?${new URLSearchParams({ slug, sortBy: "PriceAsc", limit: String(limit) })}`);
-  const arr: any[] = Array.isArray(j) ? j : (j?.listings ?? []);
-  return arr
-    .map((l) => ({ mint: String(l.mint ?? ""), price: Math.round(Number(l.price ?? 0)), seller: l.owner ?? null, source: l.source ?? null }))
-    .filter((l) => l.mint && l.price > 0);
+    .filter((x) => x.txId && x.mint)
+    .sort((a, b) => b.blockTime - a.blockTime);
 }
 
 const setCollId = db.query("UPDATE collection SET tensor_coll_id = ? WHERE slug = ?");
-const setCollSlug = db.query("UPDATE collection SET tensor_slug = ? WHERE slug = ?");
 const insSale = db.query(
   "INSERT OR IGNORE INTO sale(tx_id,slug,item_index,asset,price,buyer,seller,source,block_time) VALUES(?,?,?,?,?,?,?,?,?)",
 );
@@ -79,35 +77,44 @@ const insListing = db.query(
 async function syncCollection(c: CollectionRow): Promise<void> {
   if (c.max_supply <= 0) return; // single registries have no item slots to match
   let collId = c.tensor_coll_id;
-  let slug = c.tensor_slug;
-  if (!collId || !slug) {
+  if (!collId) {
     // resolve from one of our minted NFTs; nothing minted = nothing yet
     const sample = db.query<{ asset: string }, [string]>("SELECT asset FROM slot WHERE slug = ? LIMIT 1").get(c.slug);
     if (!sample) return;
-    const r = await resolveColl(sample.asset);
-    if (r.id && !collId) { collId = r.id; setCollId.run(r.id, c.slug); }
-    if (r.slug && !slug) { slug = r.slug; setCollSlug.run(r.slug, c.slug); }
-    if (!collId && !slug) return; // Tensor does not index this collection yet
+    collId = await resolveCollId(sample.asset);
+    if (!collId) return; // Tensor does not index this collection yet
+    setCollId.run(collId, c.slug);
   }
   const slots = db
     .query<{ asset: string; item_index: number }, [string]>("SELECT asset, item_index FROM slot WHERE slug = ?")
     .all(c.slug);
   const idxOf = new Map(slots.map((s) => [s.asset, s.item_index]));
 
-  if (collId) {
-    const sales = await fetchSales(collId, 50);
-    for (const s of sales) insSale.run(s.txId, c.slug, idxOf.get(s.mint) ?? null, s.mint, s.price, s.buyer, s.seller, s.source, s.blockTime);
+  const hist = await fetchHistory(collId, 200);
+  const now = nowSec();
+
+  for (const h of hist) {
+    if (h.type === "SALE_BUY_NOW" || h.type === "SALE_ACCEPT_BID") {
+      if (h.price > 0) insSale.run(h.txId, c.slug, idxOf.get(h.mint) ?? null, h.mint, h.price, h.buyer, h.seller, h.source, h.blockTime);
+    }
   }
-  if (slug) {
-    // Listings are a live snapshot: replace the whole set so cancelled or bought
-    // ones disappear instead of lingering.
-    const listings = await fetchListings(slug, 100);
-    const now = nowSec();
-    db.transaction(() => {
-      delListings.run(c.slug);
-      for (const l of listings) insListing.run(c.slug, idxOf.get(l.mint) ?? null, l.mint, l.price, l.seller, l.source, now);
-    })();
+
+  // Active listings = each mint's most recent state, kept when it is a live LIST
+  // (or a price adjustment) that has not expired. Snapshot-replaced so sold or
+  // delisted items drop out.
+  const seen = new Set<string>();
+  const active: { mint: string; price: number; seller: string | null; source: string | null }[] = [];
+  for (const h of hist) {
+    if (seen.has(h.mint)) continue;
+    seen.add(h.mint);
+    if ((h.type === "LIST" || h.type === "ADJUST_PRICE") && h.price > 0 && (h.listingEnd === 0 || h.listingEnd > now)) {
+      active.push({ mint: h.mint, price: h.price, seller: h.seller, source: h.source });
+    }
   }
+  db.transaction(() => {
+    delListings.run(c.slug);
+    for (const l of active) insListing.run(c.slug, idxOf.get(l.mint) ?? null, l.mint, l.price, l.seller, l.source, now);
+  })();
 }
 
 let lastPoll = 0;
@@ -177,35 +184,6 @@ export function activeListings(slug: string, limit: number): ActiveListing[] {
 const saleCountQ = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM sale WHERE slug = ?");
 const listingCountQ = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM listing WHERE slug = ?");
 
-// Temporary probe: `/collections/mints` returns a collId but no slug, and the
-// listings endpoint keys on slug, so dump the raw shapes to find where the slug
-// lives (or whether the collId doubles as the slug). Remove once resolved.
-async function raw(path: string): Promise<{ status: number; body: any }> {
-  try {
-    const r = await fetch(config.tensorBase + path, { headers: { "x-tensor-api-key": config.tensorApiKey } });
-    let body: any = null;
-    try { body = await r.json(); } catch { body = (await r.text()).slice(0, 400); }
-    return { status: r.status, body };
-  } catch (e) {
-    return { status: 0, body: String((e as any)?.message ?? e) };
-  }
-}
-
-export async function tensorProbe(dbSlug: string): Promise<any> {
-  const sample = db.query<{ asset: string }, [string]>("SELECT asset FROM slot WHERE slug = ? LIMIT 1").get(dbSlug);
-  if (!sample) return { error: "no minted item" };
-  const stored = db.query<{ tensor_coll_id: string | null }, [string]>("SELECT tensor_coll_id FROM collection WHERE slug = ?").get(dbSlug);
-  let collId = stored?.tensor_coll_id ?? null;
-  if (!collId) {
-    const mints = await tj(`/collections/mints?${new URLSearchParams({ mints: sample.asset })}`);
-    collId = Array.isArray(mints) ? (mints[0]?.id != null ? String(mints[0].id) : null) : null;
-  }
-  const slug = collId;
-  const listingsRaw = slug ? await raw(`/listings?${new URLSearchParams({ slug, sortBy: "PriceAsc", limit: "5" })}`) : null;
-  const listTxRaw = collId ? await raw(`/collections/tx_history?${new URLSearchParams({ collId, limit: "5" }).toString()}&txTypes=LIST`) : null;
-  return { sampleAsset: sample.asset, collId, listingsRaw, listTxRaw };
-}
-
 export function tensorDiag() {
   return {
     on: tensorOn(),
@@ -215,7 +193,6 @@ export function tensorDiag() {
     collections: listCollections().map((c) => ({
       slug: c.slug,
       collId: c.tensor_coll_id,
-      tensorSlug: c.tensor_slug,
       sales: saleCountQ.get(c.slug)?.n ?? 0,
       listings: listingCountQ.get(c.slug)?.n ?? 0,
     })),
