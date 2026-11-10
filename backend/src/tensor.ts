@@ -180,14 +180,26 @@ const listingCountQ = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FR
 // Temporary probe: `/collections/mints` returns a collId but no slug, and the
 // listings endpoint keys on slug, so dump the raw shapes to find where the slug
 // lives (or whether the collId doubles as the slug). Remove once resolved.
+async function raw(path: string): Promise<{ status: number; body: any }> {
+  try {
+    const r = await fetch(config.tensorBase + path, { headers: { "x-tensor-api-key": config.tensorApiKey } });
+    let body: any = null;
+    try { body = await r.json(); } catch { body = (await r.text()).slice(0, 400); }
+    return { status: r.status, body };
+  } catch (e) {
+    return { status: 0, body: String((e as any)?.message ?? e) };
+  }
+}
+
 export async function tensorProbe(dbSlug: string): Promise<any> {
   const sample = db.query<{ asset: string }, [string]>("SELECT asset FROM slot WHERE slug = ? LIMIT 1").get(dbSlug);
   if (!sample) return { error: "no minted item" };
   const mints = await tj(`/collections/mints?${new URLSearchParams({ mints: sample.asset })}`);
   const collId = Array.isArray(mints) ? (mints[0]?.id != null ? String(mints[0].id) : null) : null;
-  const txh = collId ? await tj(`/collections/tx_history?${new URLSearchParams({ collId, limit: "1" })}`) : null;
-  const listByCollId = collId ? await tj(`/listings?${new URLSearchParams({ slug: collId, limit: "2" })}`) : null;
-  return { sampleAsset: sample.asset, collId, mintsRaw: mints, txHistorySample: txh, listingsUsingCollIdAsSlug: listByCollId };
+  const slug = collId;
+  const listingsRaw = slug ? await raw(`/listings?${new URLSearchParams({ slug, sortBy: "PriceAsc", limit: "5" })}`) : null;
+  const listTxRaw = collId ? await raw(`/collections/tx_history?${new URLSearchParams({ collId, limit: "5" }).toString()}&txTypes=LIST`) : null;
+  return { sampleAsset: sample.asset, collId, listingsRaw, listTxRaw };
 }
 
 export function tensorDiag() {
