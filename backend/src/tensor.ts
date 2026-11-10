@@ -194,8 +194,12 @@ async function raw(path: string): Promise<{ status: number; body: any }> {
 export async function tensorProbe(dbSlug: string): Promise<any> {
   const sample = db.query<{ asset: string }, [string]>("SELECT asset FROM slot WHERE slug = ? LIMIT 1").get(dbSlug);
   if (!sample) return { error: "no minted item" };
-  const mints = await tj(`/collections/mints?${new URLSearchParams({ mints: sample.asset })}`);
-  const collId = Array.isArray(mints) ? (mints[0]?.id != null ? String(mints[0].id) : null) : null;
+  const stored = db.query<{ tensor_coll_id: string | null }, [string]>("SELECT tensor_coll_id FROM collection WHERE slug = ?").get(dbSlug);
+  let collId = stored?.tensor_coll_id ?? null;
+  if (!collId) {
+    const mints = await tj(`/collections/mints?${new URLSearchParams({ mints: sample.asset })}`);
+    collId = Array.isArray(mints) ? (mints[0]?.id != null ? String(mints[0].id) : null) : null;
+  }
   const slug = collId;
   const listingsRaw = slug ? await raw(`/listings?${new URLSearchParams({ slug, sortBy: "PriceAsc", limit: "5" })}`) : null;
   const listTxRaw = collId ? await raw(`/collections/tx_history?${new URLSearchParams({ collId, limit: "5" }).toString()}&txTypes=LIST`) : null;
