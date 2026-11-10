@@ -173,15 +173,19 @@ export function startTensorPoller(): void {
   setInterval(() => void syncAll(), config.tensorPollMs);
 }
 
-export type ActiveListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null };
+export type ActiveListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscriptionSig: string | null };
 
 const listingQ = db.query<
-  { item_index: number | null; asset: string; price: number; seller: string | null; source: string | null },
+  { item_index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscription_sig: string | null },
   [string, number]
->("SELECT item_index, asset, price, seller, source FROM listing WHERE slug = ? ORDER BY price ASC LIMIT ?");
+>(
+  `SELECT listing.item_index, listing.asset, listing.price, listing.seller, listing.source, slot.inscription_sig
+   FROM listing LEFT JOIN slot ON slot.slug = listing.slug AND slot.asset = listing.asset
+   WHERE listing.slug = ? ORDER BY listing.price ASC LIMIT ?`,
+);
 
 export function activeListings(slug: string, limit: number): ActiveListing[] {
-  return listingQ.all(slug, limit).map((r) => ({ index: r.item_index, asset: r.asset, price: r.price, seller: r.seller, source: r.source }));
+  return listingQ.all(slug, limit).map((r) => ({ index: r.item_index, asset: r.asset, price: r.price, seller: r.seller, source: r.source, inscriptionSig: r.inscription_sig }));
 }
 
 export type RecentListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null; listedAt: number; inscriptionSig: string | null };
