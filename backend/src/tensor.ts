@@ -3,7 +3,7 @@
 // Everything here is a cache over on-chain sales; it never signs or spends, and
 // the key stays in this process (never reaches a browser).
 import { config } from "./config";
-import { db } from "./db";
+import { db, nowSec } from "./db";
 import { listCollections } from "./collections";
 import type { CollectionRow } from "./db";
 
@@ -19,13 +19,14 @@ async function tj(path: string): Promise<any | null> {
   }
 }
 
-// A minted NFT mint -> its Tensor collId. `collections/mints` returns, per mint,
-// the collection `{ id, name, verifiedCollection }`; `id` is the collId that
-// tx_history takes. Verified against live mainnet data.
-async function resolveCollId(itemMint: string): Promise<string | null> {
+// A minted NFT mint -> its Tensor collection. `collections/mints` returns, per
+// mint, the collection object; `id` is the collId that tx_history takes and
+// `slug` is what the /listings endpoint keys on, so we keep both. Verified
+// against live mainnet data.
+async function resolveColl(itemMint: string): Promise<{ id: string | null; slug: string | null }> {
   const a = await tj(`/collections/mints?${new URLSearchParams({ mints: itemMint })}`);
-  const id = Array.isArray(a) ? a[0]?.id : null;
-  return id ? String(id) : null;
+  const c = Array.isArray(a) ? a[0] : null;
+  return { id: c?.id != null ? String(c.id) : null, slug: c?.slug != null ? String(c.slug) : null };
 }
 
 type ParsedSale = { txId: string; mint: string; price: number; buyer: string | null; seller: string | null; source: string | null; blockTime: number };
@@ -53,44 +54,75 @@ async function fetchSales(collId: string, limit = 50): Promise<ParsedSale[]> {
     .filter((s) => s.txId && s.mint && s.price > 0);
 }
 
+type ParsedListing = { mint: string; price: number; seller: string | null; source: string | null };
+
+// Active listings for a collection. The endpoint keys on the Tensor slug and
+// returns a bare array; price is a lamport string, owner is the seller.
+async function fetchListings(slug: string, limit = 100): Promise<ParsedListing[]> {
+  const j = await tj(`/listings?${new URLSearchParams({ slug, sortBy: "PriceAsc", limit: String(limit) })}`);
+  const arr: any[] = Array.isArray(j) ? j : (j?.listings ?? []);
+  return arr
+    .map((l) => ({ mint: String(l.mint ?? ""), price: Math.round(Number(l.price ?? 0)), seller: l.owner ?? null, source: l.source ?? null }))
+    .filter((l) => l.mint && l.price > 0);
+}
+
 const setCollId = db.query("UPDATE collection SET tensor_coll_id = ? WHERE slug = ?");
+const setCollSlug = db.query("UPDATE collection SET tensor_slug = ? WHERE slug = ?");
 const insSale = db.query(
   "INSERT OR IGNORE INTO sale(tx_id,slug,item_index,asset,price,buyer,seller,source,block_time) VALUES(?,?,?,?,?,?,?,?,?)",
+);
+const delListings = db.query("DELETE FROM listing WHERE slug = ?");
+const insListing = db.query(
+  "INSERT OR REPLACE INTO listing(slug,item_index,asset,price,seller,source,updated_at) VALUES(?,?,?,?,?,?,?)",
 );
 
 async function syncCollection(c: CollectionRow): Promise<void> {
   if (c.max_supply <= 0) return; // single registries have no item slots to match
   let collId = c.tensor_coll_id;
-  if (!collId) {
-    // resolve the collId from one of our minted NFTs; nothing minted = nothing yet
+  let slug = c.tensor_slug;
+  if (!collId || !slug) {
+    // resolve from one of our minted NFTs; nothing minted = nothing yet
     const sample = db.query<{ asset: string }, [string]>("SELECT asset FROM slot WHERE slug = ? LIMIT 1").get(c.slug);
     if (!sample) return;
-    collId = await resolveCollId(sample.asset);
-    if (!collId) return; // Tensor does not index this collection yet
-    setCollId.run(collId, c.slug);
+    const r = await resolveColl(sample.asset);
+    if (r.id && !collId) { collId = r.id; setCollId.run(r.id, c.slug); }
+    if (r.slug && !slug) { slug = r.slug; setCollSlug.run(r.slug, c.slug); }
+    if (!collId && !slug) return; // Tensor does not index this collection yet
   }
-  const sales = await fetchSales(collId, 50);
-  if (!sales.length) return;
   const slots = db
     .query<{ asset: string; item_index: number }, [string]>("SELECT asset, item_index FROM slot WHERE slug = ?")
     .all(c.slug);
   const idxOf = new Map(slots.map((s) => [s.asset, s.item_index]));
-  for (const s of sales) {
-    const idx = idxOf.get(s.mint);
-    if (idx === undefined) continue; // a sale of some other collection's mint
-    insSale.run(s.txId, c.slug, idx, s.mint, s.price, s.buyer, s.seller, s.source, s.blockTime);
+
+  if (collId) {
+    const sales = await fetchSales(collId, 50);
+    for (const s of sales) insSale.run(s.txId, c.slug, idxOf.get(s.mint) ?? null, s.mint, s.price, s.buyer, s.seller, s.source, s.blockTime);
+  }
+  if (slug) {
+    // Listings are a live snapshot: replace the whole set so cancelled or bought
+    // ones disappear instead of lingering.
+    const listings = await fetchListings(slug, 100);
+    const now = nowSec();
+    db.transaction(() => {
+      delListings.run(c.slug);
+      for (const l of listings) insListing.run(c.slug, idxOf.get(l.mint) ?? null, l.mint, l.price, l.seller, l.source, now);
+    })();
   }
 }
 
-export async function syncAllSales(): Promise<void> {
+let lastPoll = 0;
+let lastError: string | null = null;
+
+export async function syncAll(): Promise<void> {
   if (!tensorOn()) return;
   for (const c of listCollections()) {
     try {
       await syncCollection(c);
-    } catch {
-      /* best effort; a bad collection never stalls the rest */
+    } catch (e) {
+      lastError = String((e as any)?.message ?? e); // best effort; one bad collection never stalls the rest
     }
   }
+  lastPoll = nowSec();
 }
 
 export type RecentSale = {
@@ -126,6 +158,37 @@ export function recentSales(slug: string, limit: number): RecentSale[] {
 
 export function startTensorPoller(): void {
   if (!tensorOn()) return;
-  void syncAllSales();
-  setInterval(() => void syncAllSales(), config.tensorPollMs);
+  void syncAll();
+  setInterval(() => void syncAll(), config.tensorPollMs);
+}
+
+export type ActiveListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null };
+
+const listingQ = db.query<
+  { item_index: number | null; asset: string; price: number; seller: string | null; source: string | null },
+  [string, number]
+>("SELECT item_index, asset, price, seller, source FROM listing WHERE slug = ? ORDER BY price ASC LIMIT ?");
+
+export function activeListings(slug: string, limit: number): ActiveListing[] {
+  return listingQ.all(slug, limit).map((r) => ({ index: r.item_index, asset: r.asset, price: r.price, seller: r.seller, source: r.source }));
+}
+
+// Why the poller sees (or does not see) data, for the /stats auditor.
+const saleCountQ = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM sale WHERE slug = ?");
+const listingCountQ = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM listing WHERE slug = ?");
+
+export function tensorDiag() {
+  return {
+    on: tensorOn(),
+    base: config.tensorBase,
+    lastPoll,
+    lastError,
+    collections: listCollections().map((c) => ({
+      slug: c.slug,
+      collId: c.tensor_coll_id,
+      tensorSlug: c.tensor_slug,
+      sales: saleCountQ.get(c.slug)?.n ?? 0,
+      listings: listingCountQ.get(c.slug)?.n ?? 0,
+    })),
+  };
 }

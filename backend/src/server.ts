@@ -19,7 +19,7 @@ import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
-import { startTensorPoller, recentSales } from "./tensor.ts";
+import { startTensorPoller, recentSales, activeListings, tensorDiag } from "./tensor.ts";
 import { poolStats } from "./rpcpool.ts";
 
 export const app = new Hono();
@@ -510,10 +510,20 @@ app.get("/c/:slug/recent", (c) => {
   return c.json({ recent });
 });
 
+// Active secondary-market listings (Tensor, mainnet only). Empty on devnet or
+// until the poller indexes the collection. Floor is the cheapest active ask.
+app.get("/c/:slug/listings", (c) => {
+  const col = getCollection(c.req.param("slug"));
+  if (!col) return c.json({ error: "not found" }, 404);
+  const limit = Math.min(Number(c.req.query("limit") ?? 200) || 200, 500);
+  const listings = activeListings(col.slug, limit);
+  return c.json({ listings, floor: listings.length ? listings[0].price : 0, count: listings.length });
+});
+
 app.get("/stats", (c) => {
   const counts: Record<string, number> = {};
   for (const row of db.query<{ state: string; n: number }, []>("SELECT state, COUNT(*) AS n FROM reservation GROUP BY state").all()) counts[row.state] = row.n;
-  return c.json({ collections: listCollections().length, reservations: counts, rpcPool: poolStats(), lastReconcile });
+  return c.json({ collections: listCollections().length, reservations: counts, rpcPool: poolStats(), lastReconcile, tensor: tensorDiag() });
 });
 
 export function startJobs() {
