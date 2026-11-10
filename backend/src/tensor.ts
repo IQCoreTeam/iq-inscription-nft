@@ -74,7 +74,7 @@ const insSale = db.query(
 );
 const delListings = db.query("DELETE FROM listing WHERE slug = ?");
 const insListing = db.query(
-  "INSERT OR REPLACE INTO listing(slug,item_index,asset,price,seller,source,updated_at) VALUES(?,?,?,?,?,?,?)",
+  "INSERT OR REPLACE INTO listing(slug,item_index,asset,price,seller,source,listed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
 );
 
 async function syncCollection(c: CollectionRow): Promise<void> {
@@ -107,17 +107,17 @@ async function syncCollection(c: CollectionRow): Promise<void> {
   // (or a price adjustment) that has not expired. Snapshot-replaced so sold or
   // delisted items drop out.
   const seen = new Set<string>();
-  const active: { mint: string; price: number; seller: string | null; source: string | null }[] = [];
+  const active: { mint: string; price: number; seller: string | null; source: string | null; listedAt: number }[] = [];
   for (const h of hist) {
     if (seen.has(h.mint)) continue;
     seen.add(h.mint);
     if ((h.type === "LIST" || h.type === "ADJUST_PRICE") && h.price > 0 && (h.listingEnd === 0 || h.listingEnd > now)) {
-      active.push({ mint: h.mint, price: h.price, seller: h.seller, source: h.source });
+      active.push({ mint: h.mint, price: h.price, seller: h.seller, source: h.source, listedAt: h.blockTime });
     }
   }
   db.transaction(() => {
     delListings.run(c.slug);
-    for (const l of active) insListing.run(c.slug, idxOf.get(l.mint) ?? null, l.mint, l.price, l.seller, l.source, now);
+    for (const l of active) insListing.run(c.slug, idxOf.get(l.mint) ?? null, l.mint, l.price, l.seller, l.source, l.listedAt, now);
   })();
 }
 
@@ -182,6 +182,25 @@ const listingQ = db.query<
 
 export function activeListings(slug: string, limit: number): ActiveListing[] {
   return listingQ.all(slug, limit).map((r) => ({ index: r.item_index, asset: r.asset, price: r.price, seller: r.seller, source: r.source }));
+}
+
+export type RecentListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null; listedAt: number; inscriptionSig: string | null };
+
+const recentListingsQ = db.query<
+  { item_index: number | null; asset: string; price: number; seller: string | null; source: string | null; listed_at: number; inscription_sig: string | null },
+  [string, number]
+>(
+  `SELECT listing.item_index, listing.asset, listing.price, listing.seller, listing.source, listing.listed_at, slot.inscription_sig
+   FROM listing LEFT JOIN slot ON slot.slug = listing.slug AND slot.asset = listing.asset
+   WHERE listing.slug = ? ORDER BY listing.listed_at DESC LIMIT ?`,
+);
+
+// Active listings newest-listed first, for the activity feed (distinct from the
+// price-sorted market view above).
+export function recentListings(slug: string, limit: number): RecentListing[] {
+  return recentListingsQ.all(slug, limit).map((r) => ({
+    index: r.item_index, asset: r.asset, price: r.price, seller: r.seller, source: r.source, listedAt: r.listed_at, inscriptionSig: r.inscription_sig,
+  }));
 }
 
 // Why the poller sees (or does not see) data, for the /stats auditor.

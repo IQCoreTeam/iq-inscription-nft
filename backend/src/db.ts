@@ -127,11 +127,15 @@ CREATE TABLE IF NOT EXISTS listing (
   price       INTEGER NOT NULL,   -- lamports
   seller      TEXT,
   source      TEXT,               -- marketplace (TENSORSWAP, MEV2, ...)
+  listed_at   INTEGER NOT NULL DEFAULT 0, -- the LIST tx time, for the activity feed
   updated_at  INTEGER NOT NULL,
   PRIMARY KEY (slug, asset)
 );
 CREATE INDEX IF NOT EXISTS listing_slug_idx ON listing(slug, price ASC);
 `);
+
+// The live listing table predates listed_at.
+try { db.exec("ALTER TABLE listing ADD COLUMN listed_at INTEGER NOT NULL DEFAULT 0"); } catch (e) { /* column already exists */ }
 
 // Lightweight migrations for columns added after launch (idempotent; the live DB
 // predates them). logo_sig / banner_sig are the inscriptions of the collection

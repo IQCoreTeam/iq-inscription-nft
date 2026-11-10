@@ -19,7 +19,7 @@ import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
-import { startTensorPoller, recentSales, activeListings, tensorDiag } from "./tensor.ts";
+import { startTensorPoller, recentSales, activeListings, recentListings, tensorDiag } from "./tensor.ts";
 import { poolStats } from "./rpcpool.ts";
 
 export const app = new Hono();
@@ -506,7 +506,8 @@ app.get("/c/:slug/recent", (c) => {
   // Secondary-market sales (Tensor, mainnet only) interleave with mints, newest
   // first. Empty on devnet, so the feed is unchanged there.
   const sales = recentSales(col.slug, limit).map((s) => ({ kind: "sale", index: s.index, asset: s.asset, price: s.price, buyer: s.buyer, source: s.source, registeredAt: s.blockTime, inscriptionSig: s.inscriptionSig }));
-  const recent = [...mints, ...sales].sort((a, b) => (b.registeredAt || 0) - (a.registeredAt || 0)).slice(0, limit);
+  const lists = recentListings(col.slug, limit).map((l) => ({ kind: "list", index: l.index, asset: l.asset, price: l.price, seller: l.seller, source: l.source, registeredAt: l.listedAt, inscriptionSig: l.inscriptionSig }));
+  const recent = [...mints, ...sales, ...lists].sort((a, b) => (b.registeredAt || 0) - (a.registeredAt || 0)).slice(0, limit);
   return c.json({ recent });
 });
 
