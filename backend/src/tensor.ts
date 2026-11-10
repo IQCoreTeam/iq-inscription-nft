@@ -190,7 +190,12 @@ export async function tensorProbe(dbSlug: string): Promise<any> {
   const col = db.query<{ tensor_coll_id: string | null }, [string]>("SELECT tensor_coll_id FROM collection WHERE slug = ?").get(dbSlug);
   const collId = col?.tensor_coll_id;
   if (!collId) return { error: "no collId" };
-  const hist = await fetchHistory(collId, 200);
+  const perLimit: Record<string, number> = {};
+  for (const lim of [25, 50, 100, 150, 200]) {
+    const j = await tj(`/collections/tx_history?${new URLSearchParams({ collId, limit: String(lim) })}`);
+    perLimit[lim] = (j?.txs ?? []).length;
+  }
+  const hist = await fetchHistory(collId, 50);
   const byType: Record<string, number> = {};
   for (const h of hist) byType[h.type] = (byType[h.type] ?? 0) + 1;
   const seen = new Set<string>();
@@ -200,7 +205,7 @@ export async function tensorProbe(dbSlug: string): Promise<any> {
     seen.add(h.mint);
     if ((h.type === "LIST" || h.type === "ADJUST_PRICE") && h.price > 0) active.push({ mint: h.mint.slice(0, 6), price: h.price, type: h.type, src: h.source });
   }
-  return { collId, histCount: hist.length, byType, activeCount: active.length, activeSample: active.slice(0, 6) };
+  return { collId, perLimit, histCount: hist.length, byType, activeCount: active.length, activeSample: active.slice(0, 6) };
 }
 
 export function tensorDiag() {
