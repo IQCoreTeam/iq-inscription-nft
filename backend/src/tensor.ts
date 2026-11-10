@@ -177,6 +177,19 @@ export function activeListings(slug: string, limit: number): ActiveListing[] {
 const saleCountQ = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM sale WHERE slug = ?");
 const listingCountQ = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM listing WHERE slug = ?");
 
+// Temporary probe: `/collections/mints` returns a collId but no slug, and the
+// listings endpoint keys on slug, so dump the raw shapes to find where the slug
+// lives (or whether the collId doubles as the slug). Remove once resolved.
+export async function tensorProbe(dbSlug: string): Promise<any> {
+  const sample = db.query<{ asset: string }, [string]>("SELECT asset FROM slot WHERE slug = ? LIMIT 1").get(dbSlug);
+  if (!sample) return { error: "no minted item" };
+  const mints = await tj(`/collections/mints?${new URLSearchParams({ mints: sample.asset })}`);
+  const collId = Array.isArray(mints) ? (mints[0]?.id != null ? String(mints[0].id) : null) : null;
+  const txh = collId ? await tj(`/collections/tx_history?${new URLSearchParams({ collId, limit: "1" })}`) : null;
+  const listByCollId = collId ? await tj(`/listings?${new URLSearchParams({ slug: collId, limit: "2" })}`) : null;
+  return { sampleAsset: sample.asset, collId, mintsRaw: mints, txHistorySample: txh, listingsUsingCollIdAsSlug: listByCollId };
+}
+
 export function tensorDiag() {
   return {
     on: tensorOn(),

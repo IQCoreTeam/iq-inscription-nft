@@ -19,7 +19,7 @@ import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
-import { startTensorPoller, recentSales, activeListings, tensorDiag } from "./tensor.ts";
+import { startTensorPoller, recentSales, activeListings, tensorDiag, tensorProbe } from "./tensor.ts";
 import { poolStats } from "./rpcpool.ts";
 
 export const app = new Hono();
@@ -519,6 +519,8 @@ app.get("/c/:slug/listings", (c) => {
   const listings = activeListings(col.slug, limit);
   return c.json({ listings, floor: listings.length ? listings[0].price : 0, count: listings.length });
 });
+
+app.get("/debug/tensor/:slug", async (c) => c.json(await tensorProbe(c.req.param("slug"))));
 
 app.get("/stats", (c) => {
   const counts: Record<string, number> = {};
