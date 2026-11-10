@@ -36,11 +36,11 @@ async function resolveCollId(itemMint: string): Promise<string | null> {
 
 type HistTx = { txId: string; mint: string; type: string; price: number; buyer: string | null; seller: string | null; source: string | null; blockTime: number; listingEnd: number };
 
-// Recent state-changing txs across every marketplace, newest first. Bids are
-// excluded; they do not change a listing's state.
+// Recent txs across every marketplace, newest first. Fetched unfiltered: the
+// txType enum names beyond LIST/SALE_* are not all documented, and a single bad
+// txTypes value 400s the whole request, so we classify client-side instead.
 async function fetchHistory(collId: string, limit = 200): Promise<HistTx[]> {
   const qs = new URLSearchParams({ collId, limit: String(limit) });
-  for (const t of ["LIST", "DELIST", "ADJUST_PRICE", "SALE_BUY_NOW", "SALE_ACCEPT_BID"]) qs.append("txTypes", t);
   const j = await tj(`/collections/tx_history?${qs}`);
   const txs: any[] = j?.txs ?? [];
   const secs = (v: any) => (v ? Math.floor(new Date(v).getTime() / 1000) : 0);
@@ -183,6 +183,25 @@ export function activeListings(slug: string, limit: number): ActiveListing[] {
 // Why the poller sees (or does not see) data, for the /stats auditor.
 const saleCountQ = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM sale WHERE slug = ?");
 const listingCountQ = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM listing WHERE slug = ?");
+
+// Temporary: learn the real txType enum names so delist/sale classification is
+// exact. Remove once the active-listing reconstruction is confirmed.
+export async function tensorProbe(dbSlug: string): Promise<any> {
+  const col = db.query<{ tensor_coll_id: string | null }, [string]>("SELECT tensor_coll_id FROM collection WHERE slug = ?").get(dbSlug);
+  const collId = col?.tensor_coll_id;
+  if (!collId) return { error: "no collId" };
+  const hist = await fetchHistory(collId, 200);
+  const byType: Record<string, number> = {};
+  for (const h of hist) byType[h.type] = (byType[h.type] ?? 0) + 1;
+  const seen = new Set<string>();
+  const active: any[] = [];
+  for (const h of hist) {
+    if (seen.has(h.mint)) continue;
+    seen.add(h.mint);
+    if ((h.type === "LIST" || h.type === "ADJUST_PRICE") && h.price > 0) active.push({ mint: h.mint.slice(0, 6), price: h.price, type: h.type, src: h.source });
+  }
+  return { collId, histCount: hist.length, byType, activeCount: active.length, activeSample: active.slice(0, 6) };
+}
 
 export function tensorDiag() {
   return {
