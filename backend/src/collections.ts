@@ -22,6 +22,18 @@ export function getCollection(slug: string): CollectionRow | null {
   return bySlug.get(slug) ?? null;
 }
 
+// Shared by the JSON viewer and HTML share cards; registry mirror only.
+const assetSlot = db.query<{ slug: string; item_index: number; owner: string; inscription_sig: string; meta_sig: string }, [string]>(
+  "SELECT slug, item_index, owner, inscription_sig, meta_sig FROM slot WHERE asset = ? LIMIT 1"
+);
+export function getAssetSlot(address: string) {
+  return assetSlot.get(address) ?? null;
+}
+
+export function latestMintSignature(slug: string): string | null {
+  return latestMintOf.get(slug)?.inscription_sig ?? null;
+}
+
 export function listCollections(): CollectionRow[] {
   return all.all();
 }
@@ -118,7 +130,7 @@ export function publicView(c: CollectionRow) {
     // A representative cover = the newest minted item's inscription (the client
     // renders it through the gateway). Unminted art is never shown: the card
     // falls back to a sealed tile when nothing is minted and no banner/logo is set.
-    coverSig: latestMintOf.get(c.slug)?.inscription_sig ?? null,
+    coverSig: latestMintSignature(c.slug),
     // Where the client fetches an item's bytes before inscribing (C). The
     // backend owns the cluster (devnet.irys.xyz vs gateway.irys.xyz), so it
     // tells the client rather than the client guessing.

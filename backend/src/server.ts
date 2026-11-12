@@ -9,7 +9,7 @@ import { PublicKey, Connection } from "@solana/web3.js";
 import { config } from "./config.ts";
 import { rarityOf } from "./rarity.ts";
 import { db, nowSec } from "./db.ts";
-import { getCollection, getItem, heldBy, listCollections, mintedIndices, publicView } from "./collections.ts";
+import { getCollection, getItem, getAssetSlot, latestMintSignature, heldBy, listCollections, mintedIndices, publicView } from "./collections.ts";
 import { reserve, ReserveError } from "./allocator.ts";
 import { getReservation, markAwaitingSubmit, markCancelled, markLanded, markRejected, touchReservation } from "./reservations.ts";
 import { fetchRegistry, isMinted } from "./program.ts";
@@ -21,6 +21,7 @@ import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { startTensorPoller, recentSales, activeListings, recentListings, tensorDiag } from "./tensor.ts";
 import { poolStats } from "./rpcpool.ts";
+import { createSharePages } from "./share.ts";
 
 export const app = new Hono();
 app.use(
@@ -36,6 +37,8 @@ app.use(
     },
   }),
 );
+
+app.route("/share", createSharePages(config, { getCollection, getItem, getAssetSlot, latestMintSignature }));
 
 let lastReconcile: ReconcileReport | null = null;
 
@@ -61,7 +64,7 @@ function rateLimited(ip: string): boolean {
 }
 const clientIp = (c: any) => c.req.header("x-forwarded-for")?.split(",")[0].trim() || c.req.header("x-real-ip") || "local";
 
-app.get("/health", (c) => c.json({ ok: true, cluster: config.cluster, programId: config.programId.toBase58() }));
+app.get("/health", (c) => c.json({ ok: true, shareCards: true, cluster: config.cluster, programId: config.programId.toBase58() }));
 
 app.get("/c", (c) => c.json({ collections: listCollections().map(publicView) }));
 
@@ -475,14 +478,10 @@ app.get("/c/:slug/item/:index", (c) => {
 // minted item, keyed by its Core asset address. Lets the viewer open with zero
 // rpc calls; DECODE FROM CHAIN re-reads the account and both inscriptions.
 app.get("/asset/:address", (c) => {
-  const s = db
-    .query<{ slug: string; item_index: number; owner: string; inscription_sig: string; meta_sig: string }, [string]>(
-      "SELECT slug, item_index, owner, inscription_sig, meta_sig FROM slot WHERE asset = ?"
-    )
-    .get(c.req.param("address"));
+  const s = getAssetSlot(c.req.param("address"));
   if (!s) return c.json({ error: "not a minted item in this registry" }, 404);
   const col = getCollection(s.slug);
-  const item = db.query<{ name: string }, [string, number]>("SELECT name FROM item WHERE slug = ? AND item_index = ?").get(s.slug, s.item_index);
+  const item = getItem(s.slug, s.item_index);
   const rr = rarityOf(s.slug)?.get(s.item_index);
   return c.json({
     asset: c.req.param("address"), slug: s.slug, collection: col?.core_collection ?? null, collectionName: col?.name ?? null,
