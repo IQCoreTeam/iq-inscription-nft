@@ -17,7 +17,7 @@ export const tensorOn = (): boolean => config.tensorApiKey !== "" && config.clus
 
 async function tj(path: string): Promise<any | null> {
   try {
-    const r = await fetch(config.tensorBase + path, { headers: { "x-tensor-api-key": config.tensorApiKey } });
+    const r = await fetch(config.tensorBase + path, { headers: { "x-tensor-api-key": config.tensorApiKey }, signal: AbortSignal.timeout(10000) });
     if (!r.ok) return null;
     return await r.json();
   } catch {
@@ -123,17 +123,22 @@ async function syncCollection(c: CollectionRow): Promise<void> {
 
 let lastPoll = 0;
 let lastError: string | null = null;
+let syncing: Promise<void> | null = null;
 
-export async function syncAll(): Promise<void> {
-  if (!tensorOn()) return;
-  for (const c of listCollections()) {
-    try {
-      await syncCollection(c);
-    } catch (e) {
-      lastError = String((e as any)?.message ?? e); // best effort; one bad collection never stalls the rest
+export function syncAll(): Promise<void> {
+  if (!tensorOn()) return Promise.resolve();
+  if (syncing) return syncing;
+  syncing = (async () => {
+    for (const c of listCollections()) {
+      try {
+        await syncCollection(c);
+      } catch (e) {
+        lastError = String((e as any)?.message ?? e); // best effort; one bad collection never stalls the rest
+      }
     }
-  }
-  lastPoll = nowSec();
+    lastPoll = nowSec();
+  })().finally(() => { syncing = null; });
+  return syncing;
 }
 
 export type RecentSale = {
