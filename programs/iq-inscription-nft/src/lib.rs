@@ -35,6 +35,9 @@ const COLLECTION_AUTH_SEED: &[u8] = b"collection-auth";
 const MAX_NAME_BYTES: usize = 80;
 const MAX_URI_BYTES: usize = 160;
 const STD: &str = "iqnft-0.1";
+// Byte offset where `frozen` ends in a Registry account (8 disc + fixed fields +
+// 1 frozen byte). migrate_registry_v2 inserts the 32-byte currency field here.
+const CURRENCY_CUT: usize = 291;
 
 // Platform fee on every paid mint, charged to the minter on top of the price so a
 // creator cannot dodge it through the deposit split. Constants, not registry
@@ -378,22 +381,22 @@ pub mod iq_inscription_nft {
     // `frozen` byte and shift the bitmap. It changes no privileged field, so any
     // payer may fund the 32-byte rent bump and run it.
     pub fn migrate_registry_v2(ctx: Context<MigrateRegistry>) -> Result<()> {
-        // Offset where `frozen` ends: 8 disc + fixed fields + 1 frozen byte.
-        const CUT: usize = 291;
         let acc = ctx.accounts.registry.to_account_info();
         require_keys_eq!(*acc.owner, crate::ID, ErrorCode::BadRegistryLayout);
-        let old_total = {
+        // Build the new bytes from the old, validating the old layout as we read.
+        let new_data = {
             let data = acc.try_borrow_data()?;
-            require!(data.len() >= CUT + 4, ErrorCode::BadRegistryLayout);
+            require!(data.len() >= CURRENCY_CUT + 4, ErrorCode::BadRegistryLayout);
             require!(&data[0..8] == Registry::DISCRIMINATOR, ErrorCode::BadRegistryLayout);
             let max_supply = u32::from_le_bytes(data[138..142].try_into().unwrap());
-            CUT + 4 + Registry::bitmap_len(max_supply)
+            let old_total = CURRENCY_CUT + 4 + Registry::bitmap_len(max_supply);
+            require!(data.len() == old_total, ErrorCode::AlreadyMigratedOrBad);
+            registry_insert_currency(&data, CURRENCY_CUT)
         };
-        require!(acc.data_len() == old_total, ErrorCode::AlreadyMigratedOrBad);
-        let new_total = old_total + 32;
 
-        // Keep the account rent-exempt at the larger size, then grow it.
-        let need = Rent::get()?.minimum_balance(new_total);
+        // Keep the account rent-exempt at the larger size, fund the bump, grow,
+        // then write the new bytes (bitmap copied verbatim, so the sold set lives).
+        let need = Rent::get()?.minimum_balance(new_data.len());
         if need > acc.lamports() {
             let diff = need - acc.lamports();
             system_program::transfer(
@@ -407,18 +410,8 @@ pub mod iq_inscription_nft {
                 diff,
             )?;
         }
-        acc.resize(new_total)?;
-
-        // Shift [CUT..old_total] right by 32 (end-first, overlapping), then zero
-        // the inserted slot: Pubkey::default() == native SOL. The bitmap is copied
-        // verbatim, so the sold set survives.
-        let mut data = acc.try_borrow_mut_data()?;
-        for i in (0..(old_total - CUT)).rev() {
-            data[CUT + 32 + i] = data[CUT + i];
-        }
-        for b in data[CUT..CUT + 32].iter_mut() {
-            *b = 0;
-        }
+        acc.resize(new_data.len())?;
+        acc.try_borrow_mut_data()?.copy_from_slice(&new_data);
         Ok(())
     }
 }
@@ -573,6 +566,17 @@ fn collection_update_authority(collection: &UncheckedAccount) -> Result<Pubkey> 
     let parsed = mpl_core::accounts::BaseCollectionV1::from_bytes(&data)
         .map_err(|_| error!(ErrorCode::CollectionNotUnderProgramAuthority))?;
     Ok(parsed.update_authority)
+}
+
+// Insert a zeroed 32-byte currency field (= Pubkey::default() = native SOL) at
+// `cut`, keeping everything before it and the trailing vec_len + bitmap verbatim.
+// Pure so the byte math (the only real migration risk) is unit-tested below.
+fn registry_insert_currency(old: &[u8], cut: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(old.len() + 32);
+    v.extend_from_slice(&old[..cut]);
+    v.extend_from_slice(&[0u8; 32]);
+    v.extend_from_slice(&old[cut..]);
+    v
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -942,4 +946,37 @@ pub enum ErrorCode {
     BadRegistryLayout,
     #[msg("registry is already migrated or has an unexpected size")]
     AlreadyMigratedOrBad,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The migration's only real risk: the trailing bitmap (the sold set) must
+    // survive the 32-byte currency insertion byte-for-byte.
+    #[test]
+    fn migrate_preserves_bitmap() {
+        let bitmap = [0xA5u8, 0x00, 0xFF]; // ceil(20/8) = 3 bytes, a known pattern
+        let mut old = vec![7u8; CURRENCY_CUT]; // disc + fields + frozen (arbitrary)
+        old.extend_from_slice(&(bitmap.len() as u32).to_le_bytes());
+        old.extend_from_slice(&bitmap);
+
+        let new = registry_insert_currency(&old, CURRENCY_CUT);
+
+        assert_eq!(new.len(), old.len() + 32);
+        assert_eq!(&new[..CURRENCY_CUT], &old[..CURRENCY_CUT]); // prefix unchanged
+        assert_eq!(&new[CURRENCY_CUT..CURRENCY_CUT + 32], &[0u8; 32]); // currency = SOL
+        assert_eq!(
+            &new[CURRENCY_CUT + 32..CURRENCY_CUT + 36],
+            &(bitmap.len() as u32).to_le_bytes()
+        ); // vec_len intact
+        assert_eq!(&new[CURRENCY_CUT + 36..], &bitmap[..]); // bitmap byte-identical
+    }
+
+    // The insertion point must match where a fresh Registry writes currency:
+    // right after `frozen`, i.e. BASE_LEN minus the currency field and vec prefix.
+    #[test]
+    fn cut_matches_initialize_layout() {
+        assert_eq!(CURRENCY_CUT, Registry::BASE_LEN - 32 - 4);
+    }
 }
