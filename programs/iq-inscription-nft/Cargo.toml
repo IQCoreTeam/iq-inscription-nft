@@ -14,10 +14,11 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 
 [dependencies]
 anchor-lang = "0.32.1"
+anchor-spl = { version = "0.32.1", default-features = false, features = ["token", "token_2022"] }
 # Exact pin: 0.12.x targets the solana v3 crates and does not compile against
 # anchor 0.32; 0.10.x fails on borsh.
 mpl-core = "=0.11.2"

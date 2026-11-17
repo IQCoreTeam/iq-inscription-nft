@@ -23,6 +23,9 @@ use mpl_core::instructions::{
 use mpl_core::types::{
     Attribute, Attributes, Creator, Plugin, PluginAuthorityPair, Royalties, RuleSet,
 };
+use anchor_spl::token_interface::{
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 declare_id!("FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu");
 
@@ -58,6 +61,10 @@ pub mod iq_inscription_nft {
         price_lamports: u64,
         deposit_lamports: u64,
         treasury: Pubkey,
+        // The mint the mint price is paid in. Pubkey::default() means native SOL
+        // (the existing path). Any other mint routes the price through a
+        // Token-2022 transfer to the treasury and platform token accounts.
+        currency: Pubkey,
     ) -> Result<()> {
         require!(deposit_lamports <= price_lamports, ErrorCode::DepositOverPrice);
         // The collection must already be under our PDA, otherwise the whole
@@ -83,6 +90,7 @@ pub mod iq_inscription_nft {
         registry.manifest_sig = manifest_sig;
         registry.shuffle_commit = shuffle_commit;
         registry.frozen = false;
+        registry.currency = currency;
         registry.minted_bitmap = vec![0u8; Registry::bitmap_len(max_supply)];
         Ok(())
     }
@@ -113,10 +121,9 @@ pub mod iq_inscription_nft {
         require!(name.len() <= MAX_NAME_BYTES, ErrorCode::NameTooLong);
         require!(uri.len() <= MAX_URI_BYTES, ErrorCode::UriTooLong);
         let price = registry.price_lamports;
-        // The deposit was paid to the creator at reservation (off-chain, plain
-        // transfer), so only the remainder moves here. The platform fee is on the
-        // full price and comes from the minter on top.
-        let due = price.saturating_sub(registry.deposit_lamports);
+        let deposit = registry.deposit_lamports;
+        let currency = registry.currency;
+        let treasury_pk = registry.treasury;
         let collection = registry.collection;
 
         // The "one token per number" mark. The runtime cannot know whether #57
@@ -135,14 +142,36 @@ pub mod iq_inscription_nft {
         record.content_hash = content_hash;
         record.meta_sig = meta_sig;
 
-        pay(
-            &ctx.accounts.system_program,
-            &ctx.accounts.minter,
-            &ctx.accounts.treasury,
-            &ctx.accounts.platform_treasury,
-            due,
-            price,
-        )?;
+        // Platform fee is on the full price, charged to the minter on top.
+        let fee = price.checked_mul(PLATFORM_FEE_BPS).unwrap() / 10_000;
+        if currency == Pubkey::default() {
+            // SOL: the deposit was pre-paid to the creator at reservation
+            // (off-chain), so only the remainder of the price moves here.
+            let due = price.saturating_sub(deposit);
+            pay_sol(
+                &ctx.accounts.system_program,
+                &ctx.accounts.minter,
+                &ctx.accounts.treasury,
+                &ctx.accounts.platform_treasury,
+                due,
+                fee,
+            )?;
+        } else {
+            // SPL: the deposit stays in SOL (paid at reservation), so the full
+            // price moves in the collection's chosen token.
+            pay_spl(
+                ctx.accounts.token_program.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                ctx.accounts.currency_mint.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                &ctx.accounts.minter,
+                ctx.accounts.minter_token.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                ctx.accounts.treasury_token.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                ctx.accounts.platform_token.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                currency,
+                treasury_pk,
+                price,
+                fee,
+            )?;
+        }
 
         // On-chain identity, derived from args so it costs no transaction bytes:
         // index as decimal, sigs as lowercase hex (base58 is an expensive bignum
@@ -199,14 +228,33 @@ pub mod iq_inscription_nft {
         record.meta_sig = meta_sig;
 
         let price = registry.price_lamports;
-        pay(
-            &ctx.accounts.system_program,
-            &ctx.accounts.minter,
-            &ctx.accounts.treasury,
-            &ctx.accounts.platform_treasury,
-            price,
-            price,
-        )?;
+        let currency = registry.currency;
+        let treasury_pk = registry.treasury;
+        // No deposit on a single, so the full price moves here.
+        let fee = price.checked_mul(PLATFORM_FEE_BPS).unwrap() / 10_000;
+        if currency == Pubkey::default() {
+            pay_sol(
+                &ctx.accounts.system_program,
+                &ctx.accounts.minter,
+                &ctx.accounts.treasury,
+                &ctx.accounts.platform_treasury,
+                price,
+                fee,
+            )?;
+        } else {
+            pay_spl(
+                ctx.accounts.token_program.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                ctx.accounts.currency_mint.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                &ctx.accounts.minter,
+                ctx.accounts.minter_token.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                ctx.accounts.treasury_token.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                ctx.accounts.platform_token.as_ref().ok_or(ErrorCode::CurrencyAccountsMissing)?,
+                currency,
+                treasury_pk,
+                price,
+                fee,
+            )?;
+        }
 
         let registry = &mut ctx.accounts.registry;
         registry.minted = registry.minted.checked_add(1).unwrap();
@@ -324,18 +372,67 @@ pub mod iq_inscription_nft {
             .invoke_signed(&[auth_seeds])?;
         Ok(())
     }
+
+    // One-time, permissionless migration of a pre-currency Registry to the
+    // currency layout: insert currency = Pubkey::default() (native SOL) after the
+    // `frozen` byte and shift the bitmap. It changes no privileged field, so any
+    // payer may fund the 32-byte rent bump and run it.
+    pub fn migrate_registry_v2(ctx: Context<MigrateRegistry>) -> Result<()> {
+        // Offset where `frozen` ends: 8 disc + fixed fields + 1 frozen byte.
+        const CUT: usize = 291;
+        let acc = ctx.accounts.registry.to_account_info();
+        require_keys_eq!(*acc.owner, crate::ID, ErrorCode::BadRegistryLayout);
+        let old_total = {
+            let data = acc.try_borrow_data()?;
+            require!(data.len() >= CUT + 4, ErrorCode::BadRegistryLayout);
+            require!(&data[0..8] == Registry::DISCRIMINATOR, ErrorCode::BadRegistryLayout);
+            let max_supply = u32::from_le_bytes(data[138..142].try_into().unwrap());
+            CUT + 4 + Registry::bitmap_len(max_supply)
+        };
+        require!(acc.data_len() == old_total, ErrorCode::AlreadyMigratedOrBad);
+        let new_total = old_total + 32;
+
+        // Keep the account rent-exempt at the larger size, then grow it.
+        let need = Rent::get()?.minimum_balance(new_total);
+        if need > acc.lamports() {
+            let diff = need - acc.lamports();
+            system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    system_program::Transfer {
+                        from: ctx.accounts.payer.to_account_info(),
+                        to: acc.clone(),
+                    },
+                ),
+                diff,
+            )?;
+        }
+        acc.resize(new_total)?;
+
+        // Shift [CUT..old_total] right by 32 (end-first, overlapping), then zero
+        // the inserted slot: Pubkey::default() == native SOL. The bitmap is copied
+        // verbatim, so the sold set survives.
+        let mut data = acc.try_borrow_mut_data()?;
+        for i in (0..(old_total - CUT)).rev() {
+            data[CUT + 32 + i] = data[CUT + i];
+        }
+        for b in data[CUT..CUT + 32].iter_mut() {
+            *b = 0;
+        }
+        Ok(())
+    }
 }
 
 // Price to the creator's treasury, platform fee to the platform treasury. Both
 // from the minter. `due` is what the minter still owes on the price; `price` is
 // the full price the fee is computed on.
-fn pay<'info>(
+fn pay_sol<'info>(
     system_program: &Program<'info, System>,
     minter: &Signer<'info>,
     treasury: &UncheckedAccount<'info>,
     platform_treasury: &UncheckedAccount<'info>,
     due: u64,
-    price: u64,
+    fee: u64,
 ) -> Result<()> {
     if due > 0 {
         system_program::transfer(
@@ -349,7 +446,6 @@ fn pay<'info>(
             due,
         )?;
     }
-    let fee = price.checked_mul(PLATFORM_FEE_BPS).unwrap() / 10_000;
     if fee > 0 {
         system_program::transfer(
             CpiContext::new(
@@ -360,6 +456,71 @@ fn pay<'info>(
                 },
             ),
             fee,
+        )?;
+    }
+    Ok(())
+}
+
+// Same split in an SPL (or Token-2022) mint: the minter's token account pays the
+// creator's and the platform's token accounts. The money must land in the
+// collection's chosen mint, owned by the configured treasury and the platform
+// treasury; any token account satisfying that is accepted (the client uses the
+// ATA). transfer_checked verifies the decimals and routes to the token program
+// the mint belongs to. NOTE: this does not yet forward transfer-hook extra
+// accounts, so a mint with an active hook would fail here; the stock tokens we
+// target have no active hook today. Hook forwarding is a hardening follow-up.
+#[allow(clippy::too_many_arguments)]
+fn pay_spl<'info>(
+    token_program: &Interface<'info, TokenInterface>,
+    mint: &InterfaceAccount<'info, Mint>,
+    minter: &Signer<'info>,
+    minter_token: &InterfaceAccount<'info, TokenAccount>,
+    treasury_token: &InterfaceAccount<'info, TokenAccount>,
+    platform_token: &InterfaceAccount<'info, TokenAccount>,
+    currency: Pubkey,
+    treasury_owner: Pubkey,
+    due: u64,
+    fee: u64,
+) -> Result<()> {
+    require_keys_eq!(mint.key(), currency, ErrorCode::WrongCurrencyMint);
+    require!(minter_token.mint == mint.key(), ErrorCode::WrongCurrencyAccount);
+    require!(
+        treasury_token.mint == mint.key() && treasury_token.owner == treasury_owner,
+        ErrorCode::WrongCurrencyAccount
+    );
+    require!(
+        platform_token.mint == mint.key() && platform_token.owner == PLATFORM_TREASURY,
+        ErrorCode::WrongCurrencyAccount
+    );
+    let decimals = mint.decimals;
+    if due > 0 {
+        transfer_checked(
+            CpiContext::new(
+                token_program.to_account_info(),
+                TransferChecked {
+                    from: minter_token.to_account_info(),
+                    mint: mint.to_account_info(),
+                    to: treasury_token.to_account_info(),
+                    authority: minter.to_account_info(),
+                },
+            ),
+            due,
+            decimals,
+        )?;
+    }
+    if fee > 0 {
+        transfer_checked(
+            CpiContext::new(
+                token_program.to_account_info(),
+                TransferChecked {
+                    from: minter_token.to_account_info(),
+                    mint: mint.to_account_info(),
+                    to: platform_token.to_account_info(),
+                    authority: minter.to_account_info(),
+                },
+            ),
+            fee,
+            decimals,
         )?;
     }
     Ok(())
@@ -446,6 +607,9 @@ pub struct Registry {
     pub manifest_sig: [u8; 64],
     pub shuffle_commit: [u8; 32],
     pub frozen: bool,
+    // Mint the price is paid in. Pubkey::default() = native SOL. Inserted here,
+    // before the Vec, so migrate_registry_v2 only has to shift the trailing bitmap.
+    pub currency: Pubkey,
     // One bit per item index (1-based: index i lives at bit i-1). Sized at
     // initialize_registry from max_supply; never grows. The whole sold set is
     // one account read.
@@ -453,7 +617,8 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub const BASE_LEN: usize = 8 + 1 + 1 + 32 + 32 + 32 + 32 + 4 + 4 + 8 + 8 + 32 + 64 + 32 + 1 + 4;
+    pub const BASE_LEN: usize =
+        8 + 1 + 1 + 32 + 32 + 32 + 32 + 4 + 4 + 8 + 8 + 32 + 64 + 32 + 1 + 32 + 4;
     pub fn bitmap_len(max_supply: u32) -> usize {
         (max_supply as usize + 7) / 8
     }
@@ -561,6 +726,19 @@ pub struct RegisterItem<'info> {
     #[account(address = mpl_core::ID)]
     pub mpl_core_program: UncheckedAccount<'info>,
 
+    // Optional SPL payment accounts: present only when the registry's currency is
+    // not SOL. A SOL collection passes these as None. The handler checks the mint
+    // matches registry.currency and that the token accounts belong to the right
+    // owners, so unused/forged accounts cannot be slipped in.
+    pub currency_mint: Option<InterfaceAccount<'info, Mint>>,
+    #[account(mut)]
+    pub minter_token: Option<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut)]
+    pub treasury_token: Option<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut)]
+    pub platform_token: Option<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Option<Interface<'info, TokenInterface>>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -616,6 +794,19 @@ pub struct RegisterSingle<'info> {
     /// CHECK: pinned to the mpl-core program id.
     #[account(address = mpl_core::ID)]
     pub mpl_core_program: UncheckedAccount<'info>,
+
+    // Optional SPL payment accounts: present only when the registry's currency is
+    // not SOL. A SOL collection passes these as None. The handler checks the mint
+    // matches registry.currency and that the token accounts belong to the right
+    // owners, so unused/forged accounts cannot be slipped in.
+    pub currency_mint: Option<InterfaceAccount<'info, Mint>>,
+    #[account(mut)]
+    pub minter_token: Option<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut)]
+    pub treasury_token: Option<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut)]
+    pub platform_token: Option<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Option<Interface<'info, TokenInterface>>,
 
     pub system_program: Program<'info, System>,
 }
@@ -700,6 +891,19 @@ pub struct UpdateCollection<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct MigrateRegistry<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// CHECK: a Registry account owned by this program; the layout and
+    /// already-migrated guard are checked in the handler.
+    #[account(mut)]
+    pub registry: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("registry is frozen")]
@@ -728,4 +932,14 @@ pub enum ErrorCode {
     DepositOverPrice,
     #[msg("register_single needs a registry with max_supply 0")]
     NotASingleRegistry,
+    #[msg("SPL currency payment accounts are missing")]
+    CurrencyAccountsMissing,
+    #[msg("currency mint does not match registry.currency")]
+    WrongCurrencyMint,
+    #[msg("a currency token account has the wrong mint or owner")]
+    WrongCurrencyAccount,
+    #[msg("registry account is not the expected pre-currency layout")]
+    BadRegistryLayout,
+    #[msg("registry is already migrated or has an unexpected size")]
+    AlreadyMigratedOrBad,
 }
