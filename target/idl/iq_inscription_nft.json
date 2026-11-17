@@ -140,8 +140,44 @@
         {
           "name": "treasury",
           "type": "pubkey"
+        },
+        {
+          "name": "currency",
+          "type": "pubkey"
         }
       ]
+    },
+    {
+      "name": "migrate_registry_v2",
+      "discriminator": [
+        82,
+        111,
+        83,
+        198,
+        188,
+        234,
+        58,
+        4
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "registry",
+          "docs": [
+            "already-migrated guard are checked in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "register_item",
@@ -250,6 +286,29 @@
         {
           "name": "mpl_core_program",
           "address": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+        },
+        {
+          "name": "currency_mint",
+          "optional": true
+        },
+        {
+          "name": "minter_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "platform_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true
         },
         {
           "name": "system_program",
@@ -405,6 +464,29 @@
         {
           "name": "mpl_core_program",
           "address": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+        },
+        {
+          "name": "currency_mint",
+          "optional": true
+        },
+        {
+          "name": "minter_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "platform_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true
         },
         {
           "name": "system_program",
@@ -1012,6 +1094,31 @@
       "code": 6012,
       "name": "NotASingleRegistry",
       "msg": "register_single needs a registry with max_supply 0"
+    },
+    {
+      "code": 6013,
+      "name": "CurrencyAccountsMissing",
+      "msg": "SPL currency payment accounts are missing"
+    },
+    {
+      "code": 6014,
+      "name": "WrongCurrencyMint",
+      "msg": "currency mint does not match registry.currency"
+    },
+    {
+      "code": 6015,
+      "name": "WrongCurrencyAccount",
+      "msg": "a currency token account has the wrong mint or owner"
+    },
+    {
+      "code": 6016,
+      "name": "BadRegistryLayout",
+      "msg": "registry account is not the expected pre-currency layout"
+    },
+    {
+      "code": 6017,
+      "name": "AlreadyMigratedOrBad",
+      "msg": "registry is already migrated or has an unexpected size"
     }
   ],
   "types": [
@@ -1132,6 +1239,10 @@
           {
             "name": "frozen",
             "type": "bool"
+          },
+          {
+            "name": "currency",
+            "type": "pubkey"
           },
           {
             "name": "minted_bitmap",

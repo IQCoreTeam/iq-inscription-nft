@@ -17,6 +17,7 @@ import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
+import { isAllowedCurrency, isSol, currencyList } from "./currencies.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { startTensorPoller, recentSales, activeListings, recentListings, tensorDiag } from "./tensor.ts";
@@ -264,9 +265,15 @@ function parseSpec(b: any): { spec: DeploySpec } | { error: string; code: 400 | 
   if (!isPubkey(b.creator)) return { error: "creator must be a base58 pubkey", code: 400 };
   if (typeof b.name !== "string" || !b.name || Buffer.byteLength(b.name) > 80) return { error: "name must be 1..80 bytes", code: 400 };
   if (typeof b.symbol !== "string" || !b.symbol) return { error: "symbol required", code: 400 };
-  const price = Number(b.price) || 0, deposit = Number(b.deposit) || 0;
+  const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
+  if (!isAllowedCurrency(currency)) return { error: "currency must be SOL or an allowed mint", code: 400 };
+  const price = Number(b.price) || 0;
+  // The deposit is always SOL. For a token-priced collection it cannot be netted
+  // against a token price (different units) and the program requires
+  // deposit <= price, so a token collection takes no SOL deposit in v1.
+  const deposit = isSol(currency) ? Number(b.deposit) || 0 : 0;
   if (deposit > price) return { error: "deposit cannot exceed price", code: 400 };
-  return { spec: { slug, name: b.name, symbol: b.symbol, description: typeof b.description === "string" ? b.description : "", price, deposit, royaltyBps: Number(b.royaltyBps) || 0, sequential: !!b.sequential } };
+  return { spec: { slug, name: b.name, symbol: b.symbol, description: typeof b.description === "string" ? b.description : "", price, deposit, royaltyBps: Number(b.royaltyBps) || 0, sequential: !!b.sequential, currency } };
 }
 
 // Decode a request's items: [{ index, name, mime, imageBase64, template }] (the
@@ -289,6 +296,9 @@ const lightItems = (items: StageItem[]) => items.map((it) => ({ ...it, bytes: Bu
 // Single-shot stage: the CLI and small collections upload every image in one
 // request. Large collections use begin/batch/finish below so no single request
 // carries the whole collection or runs the whole Arweave upload.
+// The non-SOL currencies a creator may price a collection in (SOL is implicit).
+app.get("/creator/currencies", (c) => c.json({ currencies: currencyList() }));
+
 app.post("/creator/stage", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
   const sp = parseSpec(b);

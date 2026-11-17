@@ -26,7 +26,7 @@ async function finish(ix: Awaited<ReturnType<typeof buildRegisterItemIx>>, feePa
 
 export async function coSignRegisterItem(c: CollectionRow, item: ItemRow, r: ReservationRow, inscriptionSig: string, metaSig: string, asset: string): Promise<CoSigned> {
   const ix = await buildRegisterItemIx(
-    { collection: new PublicKey(c.core_collection), treasury: new PublicKey(c.treasury) },
+    { collection: new PublicKey(c.core_collection), treasury: new PublicKey(c.treasury), currencyMint: c.currency_mint },
     {
       index: item.item_index,
       contentHash: Buffer.from(item.image_sha256, "hex"),
@@ -44,7 +44,7 @@ export async function coSignRegisterItem(c: CollectionRow, item: ItemRow, r: Res
 
 export async function coSignRegisterSingle(c: CollectionRow, a: { wallet: string; burner: string; inscriptionSig: string; metaSig: string; name: string; asset: string }): Promise<CoSigned> {
   const ix = await buildRegisterSingleIx(
-    { collection: new PublicKey(c.core_collection), treasury: new PublicKey(c.treasury) },
+    { collection: new PublicKey(c.core_collection), treasury: new PublicKey(c.treasury), currencyMint: c.currency_mint },
     {
       inscriptionSig: sigBytes(a.inscriptionSig),
       metaSig: sigBytes(a.metaSig),

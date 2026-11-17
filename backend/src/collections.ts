@@ -4,6 +4,7 @@
 import { config } from "./config.ts";
 import { db, nowSec, type CollectionRow, type ItemRow } from "./db.ts";
 import { derivePermutation } from "./shuffle.ts";
+import { currencyInfo } from "./currencies.ts";
 import type { OnChainSlot } from "./program.ts";
 
 const bySlug = db.query<CollectionRow, [string]>("SELECT * FROM collection WHERE slug = ?");
@@ -95,9 +96,11 @@ export function publicView(c: CollectionRow) {
     description: c.description,
     creator: c.creator,
     maxSupply: c.max_supply,
-    priceLamports: c.price_lamports,
-    depositLamports: c.deposit_lamports,
+    priceLamports: c.price_lamports, // price in the currency's smallest unit (lamports for SOL, raw token units otherwise)
+    depositLamports: c.deposit_lamports, // deposit is always SOL
     treasury: c.treasury,
+    // The mint the price is paid in. SOL unless the creator chose a token.
+    currency: currencyInfo(c.currency_mint), // { mint, symbol, decimals, issuer }
     sequential: c.sequential === 1,
     shuffleCommit: c.shuffle_commit,
     manifestSig: c.manifest_sig,

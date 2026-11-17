@@ -17,7 +17,7 @@ for (const t of ["sale", "slot", "returned", "reservation", "allowlist", "item",
 const { recordCollection, stageCollection } = await import("./creator.ts");
 const { listCollections } = await import("./collections.ts");
 
-const spec = { slug: "regression", name: "Test", symbol: "TEST", description: "", price: 0, deposit: 0, royaltyBps: 0, sequential: true };
+const spec = { slug: "regression", name: "Test", symbol: "TEST", description: "", price: 0, deposit: 0, royaltyBps: 0, sequential: true, currency: "SOL" };
 const item = (index: number) => ({ index, name: `Item ${index}`, bytes: Buffer.alloc(0), mime: "image/png", template: {} });
 function args(indices: number[]) {
   const items = indices.map(item);

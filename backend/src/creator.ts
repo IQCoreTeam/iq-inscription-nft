@@ -9,7 +9,7 @@
 // The shuffle seed is generated and kept here, never handed to the browser; only
 // its commit (sha256) goes into the manifest and on-chain.
 import { createHash, randomBytes } from "node:crypto";
-import { Transaction, SystemProgram, type Connection, type PublicKey } from "@solana/web3.js";
+import { Transaction, SystemProgram, PublicKey, type Connection } from "@solana/web3.js";
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { publicKey as umiPk, createNoopSigner } from "@metaplex-foundation/umi";
 import { toWeb3JsInstruction } from "@metaplex-foundation/umi-web3js-adapters";
@@ -21,6 +21,7 @@ import { db, nowSec } from "./db.ts";
 import { program, registryOf, collectionAuthOf, PLATFORM_TREASURY } from "./program.ts";
 import { uploadToArweave } from "./arweave.ts";
 import { assetUri } from "./metadata.ts";
+import { isSol } from "./currencies.ts";
 
 const sha256 = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
 
@@ -38,6 +39,9 @@ export type DeploySpec = {
   deposit: number;
   royaltyBps: number;
   sequential: boolean;
+  // The mint the price is paid in: "SOL" (native) or an SPL/Token-2022 mint
+  // base58. Fixed at deploy; the price is then in that token's smallest unit.
+  currency: string;
 };
 export type StageItem = { index: number; name: string; bytes: Buffer; mime: string; template: Record<string, unknown> };
 export type ManifestItem = { index: number; name: string; image_sha256: string; image_mime: string; meta_sha256: string; arweave_id: string };
@@ -187,6 +191,7 @@ export async function buildDeploy(args: {
       new BN(args.spec.price),
       new BN(args.spec.deposit),
       args.creatorPubkey,
+      isSol(args.spec.currency) ? PublicKey.default : new PublicKey(args.spec.currency),
     )
     .accountsStrict({
       payer: args.payerPubkey,
@@ -222,13 +227,13 @@ export function recordCollection(args: {
   db.transaction(() => {
     db.query(
       `INSERT INTO collection (slug, core_collection, registry, name, symbol, description, creator, treasury, max_supply,
-         price_lamports, deposit_lamports, sequential, shuffle_seed, shuffle_commit, manifest_sig, manifest_hash, meta_sig, logo_sig, banner_sig, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)`,
+         price_lamports, deposit_lamports, sequential, shuffle_seed, shuffle_commit, manifest_sig, manifest_hash, meta_sig, logo_sig, banner_sig, currency_mint, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?20, ?19)`,
     ).run(
       spec.slug, args.collectionPubkey.toBase58(), args.registry.toBase58(), spec.name, spec.symbol, spec.description,
       args.creatorPubkey.toBase58(), staged.itemCount, spec.price, spec.deposit, spec.sequential ? 1 : 0,
       staged.seed.toString("hex"), staged.shuffleCommit, args.manifestSig, staged.manifestHash, args.metaSig,
-      args.logoSig ?? null, args.bannerSig ?? null, nowSec(),
+      args.logoSig ?? null, args.bannerSig ?? null, nowSec(), isSol(spec.currency) ? null : spec.currency,
     );
     const ins = db.query("INSERT INTO item (slug, item_index, name, image_sha256, image_mime, meta_sha256, arweave_id, template) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)");
     for (const it of args.items) {

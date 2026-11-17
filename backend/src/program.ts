@@ -10,6 +10,7 @@ import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { publicKey as umiPk } from "@metaplex-foundation/umi";
 import { fetchAssetsByCollection } from "@metaplex-foundation/mpl-core";
 import { config, idl, MPL_CORE } from "./config.ts";
+import { isSol, tokenProgramFor, ataFor, SOL_SENTINEL } from "./currencies.ts";
 
 const connection = new Connection(config.rpcUrls[0], "confirmed");
 const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(config.registrar), {
@@ -39,7 +40,25 @@ export const sigBytes = (base58: string): Uint8Array => {
   return b;
 };
 
-type Target = { collection: PublicKey; treasury: PublicKey };
+type Target = { collection: PublicKey; treasury: PublicKey; currencyMint?: string | null };
+
+// The optional SPL payment accounts for register_item / register_single. For a
+// SOL collection every one is null (the program takes the system-transfer path);
+// for a token collection they are the mint + the minter/treasury/platform ATAs.
+function splAccounts(currencyMint: string | null | undefined, treasury: PublicKey, minter: PublicKey) {
+  if (isSol(currencyMint)) {
+    return { currencyMint: null, minterToken: null, treasuryToken: null, platformToken: null, tokenProgram: null };
+  }
+  const mint = new PublicKey(currencyMint as string);
+  const prog = tokenProgramFor(currencyMint as string);
+  return {
+    currencyMint: mint,
+    minterToken: ataFor(minter, mint, prog),
+    treasuryToken: ataFor(treasury, mint, prog),
+    platformToken: ataFor(PLATFORM_TREASURY, mint, prog),
+    tokenProgram: prog,
+  };
+}
 
 export function buildRegisterItemIx(t: Target, a: {
   index: number;
@@ -68,6 +87,7 @@ export function buildRegisterItemIx(t: Target, a: {
       asset: a.asset,
       mplCoreProgram: MPL_CORE,
       systemProgram: SystemProgram.programId,
+      ...splAccounts(t.currencyMint, t.treasury, a.minter),
     })
     .instruction();
 }
@@ -97,6 +117,7 @@ export function buildRegisterSingleIx(t: Target, a: {
       asset: a.asset,
       mplCoreProgram: MPL_CORE,
       systemProgram: SystemProgram.programId,
+      ...splAccounts(t.currencyMint, t.treasury, a.minter),
     })
     .instruction();
 }
@@ -119,22 +140,41 @@ export type OnChainRegistry = {
   treasury: string;
   registrar: string;
   admin: string;
+  currency: string; // "SOL" or the mint base58
   bitmap: Uint8Array; // one bit per index, index i at bit i-1
 };
 
+// Raw, layout-tolerant decode. The Anchor coder is pinned to the current IDL and
+// would throw on a pre-currency (unmigrated) registry; the fixed fields sit at
+// the same offsets in both layouts, and the currency field (if present) is
+// detected by the account size. So the backend reads old and new registries
+// alike, which is what lets it deploy before the program upgrade + migration.
+const FROZEN_END = 291; // 8 disc + fixed fields + 1 frozen byte
 export async function fetchRegistry(registry: PublicKey): Promise<OnChainRegistry> {
-  const r = (await program.account.registry.fetchNullable(registry, "confirmed")) as any;
-  if (!r) throw new Error(`registry ${registry.toBase58()} not found on chain`);
+  const info = await connection.getAccountInfo(registry, "confirmed");
+  if (!info) throw new Error(`registry ${registry.toBase58()} not found on chain`);
+  const d = info.data;
+  const pk = (o: number) => new PublicKey(d.subarray(o, o + 32)).toBase58();
+  const maxSupply = d.readUInt32LE(138);
+  const oldTotal = FROZEN_END + 4 + Math.ceil(maxSupply / 8);
+  const newLayout = d.length === oldTotal + 32;
+  if (!newLayout && d.length !== oldTotal) {
+    throw new Error(`registry ${registry.toBase58()} unexpected size ${d.length}`);
+  }
+  const currency = newLayout ? pk(FROZEN_END) : SOL_SENTINEL;
+  const vecOff = newLayout ? FROZEN_END + 32 : FROZEN_END;
+  const vecLen = d.readUInt32LE(vecOff);
   return {
-    minted: r.minted as number,
-    maxSupply: r.maxSupply as number,
-    priceLamports: Number(r.priceLamports),
-    depositLamports: Number(r.depositLamports),
-    frozen: r.frozen as boolean,
-    treasury: (r.treasury as PublicKey).toBase58(),
-    registrar: (r.registrar as PublicKey).toBase58(),
-    admin: (r.admin as PublicKey).toBase58(),
-    bitmap: Uint8Array.from(r.mintedBitmap as number[]),
+    minted: d.readUInt32LE(142),
+    maxSupply,
+    priceLamports: Number(d.readBigUInt64LE(146)),
+    depositLamports: Number(d.readBigUInt64LE(154)),
+    frozen: d[290] === 1,
+    treasury: pk(106),
+    registrar: pk(42),
+    admin: pk(74),
+    currency: currency === SOL_SENTINEL ? "SOL" : currency,
+    bitmap: Uint8Array.from(d.subarray(vecOff + 4, vecOff + 4 + vecLen)),
   };
 }
 

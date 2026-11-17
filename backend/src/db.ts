@@ -140,7 +140,7 @@ try { db.exec("ALTER TABLE listing ADD COLUMN listed_at INTEGER NOT NULL DEFAULT
 // Lightweight migrations for columns added after launch (idempotent; the live DB
 // predates them). logo_sig / banner_sig are the inscriptions of the collection
 // logo and banner, surfaced in collection.json and publicView.
-for (const col of ["logo_sig TEXT", "banner_sig TEXT", "last_mint_at INTEGER NOT NULL DEFAULT 0", "tensor_coll_id TEXT", "tensor_slug TEXT"]) {
+for (const col of ["logo_sig TEXT", "banner_sig TEXT", "last_mint_at INTEGER NOT NULL DEFAULT 0", "tensor_coll_id TEXT", "tensor_slug TEXT", "currency_mint TEXT"]) {
   try { db.exec(`ALTER TABLE collection ADD COLUMN ${col}`); } catch (e) { /* column already exists */ }
 }
 
@@ -173,6 +173,7 @@ export type CollectionRow = {
   last_mint_at: number;
   tensor_coll_id: string | null;
   tensor_slug: string | null;
+  currency_mint: string | null;
 };
 
 export type ItemRow = {
