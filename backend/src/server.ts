@@ -297,7 +297,7 @@ const lightItems = (items: StageItem[]) => items.map((it) => ({ ...it, bytes: Bu
 // request. Large collections use begin/batch/finish below so no single request
 // carries the whole collection or runs the whole Arweave upload.
 // The non-SOL currencies a creator may price a collection in (SOL is implicit).
-app.get("/creator/currencies", (c) => c.json({ currencies: currencyList() }));
+app.get("/creator/currencies", (c) => c.json({ currencies: currencyList(), checkout: "wallet-v1" }));
 
 app.post("/creator/stage", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));

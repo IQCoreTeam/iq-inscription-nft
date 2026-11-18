@@ -5,7 +5,7 @@
 // here are display-only. On devnet any valid mint is allowed (test flexibility);
 // on mainnet only SOL + the known list, so a typo can never become the price.
 
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { config } from "./config.ts";
 
 export const TOKEN_2022_PROGRAM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
@@ -68,4 +68,20 @@ export function ataFor(owner: PublicKey, mint: PublicKey, tokenProgram: PublicKe
     [owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
     ASSOCIATED_TOKEN_PROGRAM
   )[0];
+}
+
+export function createPaymentAccount(payer: PublicKey, recipient: PublicKey, mint: PublicKey) {
+  const token = tokenProgramFor(mint.toBase58());
+  return new TransactionInstruction({
+    programId: ASSOCIATED_TOKEN_PROGRAM,
+    keys: [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: ataFor(recipient, mint, token), isSigner: false, isWritable: true },
+      { pubkey: recipient, isSigner: false, isWritable: false },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: token, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from([1]), // Associated Token Program CreateIdempotent
+  });
 }

@@ -21,7 +21,7 @@ import { db, nowSec } from "./db.ts";
 import { program, registryOf, collectionAuthOf, PLATFORM_TREASURY } from "./program.ts";
 import { uploadToArweave } from "./arweave.ts";
 import { assetUri } from "./metadata.ts";
-import { isSol } from "./currencies.ts";
+import { createPaymentAccount, isSol } from "./currencies.ts";
 
 const sha256 = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
 
@@ -203,6 +203,11 @@ export async function buildDeploy(args: {
     .instruction();
 
   const tx = new Transaction().add(...createIxs, initIx);
+  if (!isSol(args.spec.currency)) {
+    const mint = new PublicKey(args.spec.currency);
+    tx.add(createPaymentAccount(args.payerPubkey, args.creatorPubkey, mint));
+    if (!args.creatorPubkey.equals(PLATFORM_TREASURY)) tx.add(createPaymentAccount(args.payerPubkey, PLATFORM_TREASURY, mint));
+  }
   // Deploy fee: creator -> platform treasury, atomic with the deploy (no extra signature).
   const fee = deployFee(args.itemCount);
   if (fee > 0) tx.add(SystemProgram.transfer({ fromPubkey: args.payerPubkey, toPubkey: PLATFORM_TREASURY, lamports: fee }));
