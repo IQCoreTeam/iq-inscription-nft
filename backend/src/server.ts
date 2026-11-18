@@ -17,7 +17,7 @@ import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
-import { isAllowedCurrency, isSol, currencyList } from "./currencies.ts";
+import { isAllowedCurrency, isSol, STOCK_CURRENCIES } from "./currencies.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { startTensorPoller, recentSales, activeListings, recentListings, tensorDiag } from "./tensor.ts";
@@ -170,6 +170,16 @@ app.post("/c/:slug/mint", async (c) => {
   if (r.state !== "reserved" && r.state !== "awaiting_submit") return c.json({ error: `reservation is ${r.state}` }, 409);
   if (r.expires_at < nowSec()) return c.json({ error: "reservation expired" }, 409);
 
+  if (!isSol(col.currency_mint)) {
+    let registry;
+    try { registry = await fetchRegistry(new PublicKey(col.registry)); }
+    catch { return c.json({ error: "registry unavailable, retry" }, 503); }
+    if (registry.currency !== col.currency_mint || registry.priceLamports !== col.price_lamports ||
+        registry.treasury !== col.treasury || registry.depositLamports !== 0) {
+      return c.json({ error: "Mint terms changed on chain. Checkout is paused until the collection is updated." }, 422);
+    }
+  }
+
   // Replay: already verified, re-issue with a fresh blockhash. No new verification.
   if (r.state === "awaiting_submit") {
     const co = await coSignRegisterItem(col, item, r, r.inscription_sig!, r.meta_sig!, r.asset!);
@@ -267,11 +277,13 @@ function parseSpec(b: any): { spec: DeploySpec } | { error: string; code: 400 | 
   if (typeof b.symbol !== "string" || !b.symbol) return { error: "symbol required", code: 400 };
   const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
   if (!isAllowedCurrency(currency)) return { error: "currency must be SOL or an allowed mint", code: 400 };
-  const price = Number(b.price) || 0;
+  const price = Number(b.price ?? 0);
+  if (!Number.isSafeInteger(price) || price < 0) return { error: "price must be a non-negative integer in base units", code: 400 };
   // The deposit is always SOL. For a token-priced collection it cannot be netted
   // against a token price (different units) and the program requires
   // deposit <= price, so a token collection takes no SOL deposit in v1.
-  const deposit = isSol(currency) ? Number(b.deposit) || 0 : 0;
+  const deposit = isSol(currency) ? Number(b.deposit ?? 0) : 0;
+  if (!Number.isSafeInteger(deposit) || deposit < 0) return { error: "deposit must be a non-negative integer in lamports", code: 400 };
   if (deposit > price) return { error: "deposit cannot exceed price", code: 400 };
   return { spec: { slug, name: b.name, symbol: b.symbol, description: typeof b.description === "string" ? b.description : "", price, deposit, royaltyBps: Number(b.royaltyBps) || 0, sequential: !!b.sequential, currency } };
 }
@@ -297,7 +309,7 @@ const lightItems = (items: StageItem[]) => items.map((it) => ({ ...it, bytes: Bu
 // request. Large collections use begin/batch/finish below so no single request
 // carries the whole collection or runs the whole Arweave upload.
 // The non-SOL currencies a creator may price a collection in (SOL is implicit).
-app.get("/creator/currencies", (c) => c.json({ currencies: currencyList(), checkout: "wallet-v1" }));
+app.get("/creator/currencies", (c) => c.json({ currencies: STOCK_CURRENCIES, checkout: "wallet-v1" }));
 
 app.post("/creator/stage", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));

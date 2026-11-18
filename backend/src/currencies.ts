@@ -9,7 +9,6 @@ import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.j
 import { config } from "./config.ts";
 
 export const TOKEN_2022_PROGRAM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
-export const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 export const ASSOCIATED_TOKEN_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 // The registry stores Pubkey::default() (all ones in base58) to mean native SOL.
 export const SOL_SENTINEL = PublicKey.default.toBase58();
@@ -18,23 +17,19 @@ export type CurrencyInfo = { mint: string; symbol: string; decimals: number; iss
 
 // Tokenized stocks on Solana (Backpack Securities via Sunrise, and xStocks). All
 // Token-2022. Verified mints; see the tensor-tx-api memory.
-const LIST: CurrencyInfo[] = [
+export const STOCK_CURRENCIES: readonly CurrencyInfo[] = [
   { mint: "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh", symbol: "NVDAx", decimals: 8, issuer: "xStocks" },
   { mint: "NVDAVuiB7hwd3m5Wa1JuHNovPaPG6BH1QNztbKFxNjv", symbol: "NVDA", decimals: 6, issuer: "Backpack Securities" },
   { mint: "BLKKYfF41c6xRPrtX1rdYbxLE1xxEdZUnxQsB5hcZ8Nf", symbol: "BLK", decimals: 6, issuer: "Backpack Securities" },
   { mint: "SPYBo66VJPFjh1pXMb9Le53kDYWTK1zzYVDeVRWtsbi", symbol: "SPY", decimals: 6, issuer: "Backpack Securities" },
 ];
-const byMint = new Map(LIST.map((c) => [c.mint, c]));
+const byMint = new Map(STOCK_CURRENCIES.map((c) => [c.mint, c]));
 
 export const SOL_INFO: CurrencyInfo = { mint: "SOL", symbol: "SOL", decimals: 9, issuer: "" };
 
 // Is this currency native SOL? ("SOL", empty, or the default-pubkey sentinel.)
 export const isSol = (mint: string | null | undefined): boolean =>
   !mint || mint === "SOL" || mint === SOL_SENTINEL;
-
-export function currencyList(): CurrencyInfo[] {
-  return LIST;
-}
 
 // Display info for a stored currency mint. SOL for the native case; the known
 // entry for a listed mint; a generic entry (symbol = short mint) otherwise, so
@@ -55,32 +50,25 @@ export function isAllowedCurrency(mint: string): boolean {
   return false;
 }
 
-// All target stock tokens are Token-2022; a mint not in the list (devnet test)
-// is also created as Token-2022. Classic SPL is not a target, so default 2022.
-export function tokenProgramFor(_mint: string): PublicKey {
-  return TOKEN_2022_PROGRAM;
-}
-
-// The associated token account for an owner + mint under a token program.
+// The associated token account for a listed Token-2022 mint.
 // Hand-derived so the backend needs no @solana/spl-token dependency.
-export function ataFor(owner: PublicKey, mint: PublicKey, tokenProgram: PublicKey): PublicKey {
+export function ataFor(owner: PublicKey, mint: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
+    [owner.toBuffer(), TOKEN_2022_PROGRAM.toBuffer(), mint.toBuffer()],
     ASSOCIATED_TOKEN_PROGRAM
   )[0];
 }
 
 export function createPaymentAccount(payer: PublicKey, recipient: PublicKey, mint: PublicKey) {
-  const token = tokenProgramFor(mint.toBase58());
   return new TransactionInstruction({
     programId: ASSOCIATED_TOKEN_PROGRAM,
     keys: [
       { pubkey: payer, isSigner: true, isWritable: true },
-      { pubkey: ataFor(recipient, mint, token), isSigner: false, isWritable: true },
+      { pubkey: ataFor(recipient, mint), isSigner: false, isWritable: true },
       { pubkey: recipient, isSigner: false, isWritable: false },
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: token, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_2022_PROGRAM, isSigner: false, isWritable: false },
     ],
     data: Buffer.from([1]), // Associated Token Program CreateIdempotent
   });

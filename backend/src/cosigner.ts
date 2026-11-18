@@ -6,8 +6,8 @@
 import { PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
 import { config } from "./config.ts";
 import { withConnection } from "./rpcpool.ts";
-import { buildRegisterItemIx, buildRegisterSingleIx, PLATFORM_TREASURY, sigBytes } from "./program.ts";
-import { createPaymentAccount, isSol } from "./currencies.ts";
+import { buildRegisterItemIx, buildRegisterSingleIx, preparePaymentAccounts, sigBytes } from "./program.ts";
+import { isSol } from "./currencies.ts";
 import { assetUri } from "./metadata.ts";
 import type { CollectionRow, ItemRow, ReservationRow } from "./db.ts";
 
@@ -44,9 +44,8 @@ export async function coSignRegisterItem(c: CollectionRow, item: ItemRow, r: Res
       asset: new PublicKey(asset),
     }
   );
-  const recipients = treasury.equals(PLATFORM_TREASURY) ? [treasury] : [treasury, PLATFORM_TREASURY];
   if (!currency) return finish(ix, burner);
-  const setup = recipients.map(owner => createPaymentAccount(buyer, owner, currency));
+  const setup = preparePaymentAccounts(buyer, treasury, currency);
   const accounts = await withConnection((c) => c.getMultipleAccountsInfo(setup.map(ix => ix.keys[1].pubkey), "confirmed"));
   return finish(ix, buyer, setup.filter((_, i) => !accounts[i]));
 }
