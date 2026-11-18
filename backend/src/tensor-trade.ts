@@ -23,7 +23,12 @@ async function tensorTx(path: string, params: Record<string, string>): Promise<T
   if (!r.ok) throw new Error((j && (j.message || j.error)) || `tensor ${path} ${r.status}`);
   const t = j?.txs?.[0];
   if (!t?.txV0) throw new Error(`tensor ${path} returned no transaction`);
-  return { txV0: t.txV0, lastValidBlockHeight: t.lastValidBlockHeight ?? null, totalCost: j.totalCost ?? null };
+  // The API returns txV0 as a Buffer-JSON ({type:"Buffer",data:[...]}), not the
+  // base64 the OpenAPI implies. Normalize to a base64 string so the client just
+  // does VersionedTransaction.deserialize(base64 -> bytes).
+  const raw = t.txV0 as any;
+  const txV0 = typeof raw === "string" ? raw : Buffer.from(raw.data ?? raw).toString("base64");
+  return { txV0, lastValidBlockHeight: t.lastValidBlockHeight ?? null, totalCost: j.totalCost ?? null };
 }
 
 const blockhash = () => withConnection((c) => c.getLatestBlockhash("confirmed")).then((b) => b.blockhash);
