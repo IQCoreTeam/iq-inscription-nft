@@ -21,6 +21,7 @@ import { isAllowedCurrency, isSol, currencyList } from "./currencies.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { startTensorPoller, recentSales, activeListings, recentListings, tensorDiag } from "./tensor.ts";
+import { buildListTx, buildBuyTx, buildDelistTx } from "./tensor-trade.ts";
 import { poolStats } from "./rpcpool.ts";
 
 export const app = new Hono();
@@ -529,6 +530,40 @@ app.get("/c/:slug/listings", (c) => {
   const limit = Math.min(Number(c.req.query("limit") ?? 200) || 200, 500);
   const listings = activeListings(col.slug, limit);
   return c.json({ listings, floor: listings.length ? listings[0].price : 0, count: listings.length });
+});
+
+// Secondary-market trade transactions (Tensor), built server-side (the API key
+// stays here) and returned unsigned for the client to sign and send. Our
+// treasury is the broker, so our share of Tensor's taker fee comes back. The
+// trade settles on Tensor's program, not ours. A non-SOL currency is gated by
+// STOCK_ENABLED via isAllowedCurrency.
+app.post("/market/list", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  if (!isPubkey(b.mint) || !isPubkey(b.owner)) return c.json({ error: "mint and owner must be base58 pubkeys" }, 400);
+  const price = Number(b.price);
+  if (!Number.isFinite(price) || price <= 0) return c.json({ error: "price must be a positive number" }, 400);
+  const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
+  if (!isAllowedCurrency(currency)) return c.json({ error: "currency not available", currency }, 403);
+  try { return c.json(await buildListTx({ mint: b.mint, owner: b.owner, price, currency })); }
+  catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
+});
+
+app.post("/market/buy", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  if (!isPubkey(b.mint) || !isPubkey(b.buyer) || !isPubkey(b.owner)) return c.json({ error: "mint, buyer, owner must be base58 pubkeys" }, 400);
+  const maxPrice = Number(b.maxPrice);
+  if (!Number.isFinite(maxPrice) || maxPrice <= 0) return c.json({ error: "maxPrice must be a positive number" }, 400);
+  const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
+  if (!isAllowedCurrency(currency)) return c.json({ error: "currency not available", currency }, 403);
+  try { return c.json(await buildBuyTx({ mint: b.mint, buyer: b.buyer, owner: b.owner, maxPrice, currency })); }
+  catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
+});
+
+app.post("/market/delist", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  if (!isPubkey(b.mint) || !isPubkey(b.owner)) return c.json({ error: "mint and owner must be base58 pubkeys" }, 400);
+  try { return c.json(await buildDelistTx({ mint: b.mint, owner: b.owner })); }
+  catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
 });
 
 app.get("/stats", (c) => {
