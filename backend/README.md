@@ -178,6 +178,8 @@ A `503 verification unavailable, retry` from `/mint` or `/single/mint` is not a 
 | `MAX_OPEN_RESERVATIONS_PER_WALLET` | 3 | |
 | `RESERVE_PER_IP_PER_MINUTE` | 10 | |
 | `CORS_ORIGIN` | * | the site origin in production |
+| `STOCK_ENABLED` | false | master switch for stock-token currencies (mint and trade). SOL is never gated |
+| `STOCK_BLOCKED_COUNTRIES` | US,CU,IR,KP,SY | ISO alpha-2 list that never sees stock currencies. Read from Cloudflare's `CF-IPCountry`; on mainnet a request with no country is refused, so stocks stay off until the host is proxied through Cloudflare and the reverse proxy drops that header from any other peer |
 | `ARWEAVE_KEYPAIR` | | SOL keypair that pays Irys uploads (deploy-collection only) |
 | `IRYS_DEVNET` | true | Irys devnet node |
 | `ARWEAVE_GATEWAY` | https://gateway.irys.xyz | where `arweave_id` resolves (devnet: https://devnet.irys.xyz) |

@@ -44,12 +44,13 @@ export function currencyInfo(mint: string | null | undefined): CurrencyInfo {
   return byMint.get(mint!) ?? { mint: mint!, symbol: mint!.slice(0, 4), decimals: 0, issuer: "" };
 }
 
-// What a creator or trader may use. SOL is always allowed. A non-SOL currency is
-// refused unless stock trading is enabled (the lawyer + geo-fence gate); once on,
-// the known mints on mainnet and any valid mint on devnet (for tests).
-export function isAllowedCurrency(mint: string): boolean {
+// What a creator or trader may use. SOL is always allowed. A non-SOL currency
+// needs `stocks` (geo.ts stockAllowed for this request: the switch and the
+// caller's country); then the known mints on mainnet and any valid mint on
+// devnet (for tests).
+export function isAllowedCurrency(mint: string, stocks: boolean): boolean {
   if (isSol(mint)) return true;
-  if (!config.stockEnabled) return false;
+  if (!stocks) return false;
   if (byMint.has(mint)) return true;
   if (config.cluster !== "mainnet") {
     try { new PublicKey(mint); return true; } catch { return false; }
