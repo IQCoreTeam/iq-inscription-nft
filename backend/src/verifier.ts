@@ -9,10 +9,14 @@
 
 import { createHash } from "node:crypto";
 import { reader, setRpcUrl } from "@iqlabs-official/solana-sdk";
-import { config } from "./config.ts";
+import { config, MPL_CORE } from "./config.ts";
 import { withConnection } from "./rpcpool.ts";
 import { buildMetadata } from "./metadata.ts";
 import type { CollectionRow, ItemRow, ReservationRow } from "./db.ts";
+import { Message, PublicKey } from "@solana/web3.js";
+import { deserializeCollectionV1 } from "@metaplex-foundation/mpl-core";
+import { publicKey as umiPk, lamports } from "@metaplex-foundation/umi";
+import { program, collectionAuthOf } from "./program.ts";
 
 // Set once, to our primary, and never rotated: the SDK's RPC is a process-global
 // and only linked-list / session walks go through it (inline reads cost zero).
@@ -22,6 +26,53 @@ setRpcUrl(config.rpcUrls[0]);
 // yet), which is not a verdict: the caller keeps the reservation and the client
 // tries again. retry: false is a real mismatch and the reservation is rejected.
 export type VerifyResult = { pass: true } | { pass: false; retry: boolean; reason: string };
+
+// Blockhash refreshes may change, but the issued accounts, signers and instructions may not.
+export function deploymentMessage(message: Message): string {
+  const normalized = Message.from(message.serialize());
+  normalized.recentBlockhash = PublicKey.default.toBase58();
+  return normalized.serialize().toString("base64");
+}
+
+export async function verifyDeployment(signature: string, expected: {
+  message: string; collection: string; registry: string;
+}): Promise<VerifyResult> {
+  let tx;
+  let accounts;
+  try {
+    tx = await withConnection(c => c.getTransaction(signature, {
+      commitment: "confirmed", maxSupportedTransactionVersion: 0,
+    }), { retableOnNull: true });
+    if (!tx) return { pass: false, retry: true, reason: "deployment transaction not visible yet" };
+    if (!tx.meta || tx.meta.err) return { pass: false, retry: false, reason: "deployment transaction failed" };
+    if (tx.version !== "legacy" || tx.transaction.signatures[0] !== signature ||
+        deploymentMessage(tx.transaction.message as Message) !== expected.message) {
+      return { pass: false, retry: false, reason: "deployment does not match the staged transaction" };
+    }
+    accounts = await withConnection(c => c.getMultipleAccountsInfo([
+      new PublicKey(expected.registry), new PublicKey(expected.collection),
+    ], "confirmed"));
+  } catch {
+    return { pass: false, retry: true, reason: "deployment verification unavailable; retry" };
+  }
+  const [registry, collection] = accounts;
+  if (!registry || !collection) return { pass: false, retry: true, reason: "deployment accounts not visible yet" };
+  if (!registry.owner.equals(config.programId) || !collection.owner.equals(MPL_CORE)) {
+    return { pass: false, retry: false, reason: "deployment account owner mismatch" };
+  }
+  try {
+    const reg = program.coder.accounts.decode("registry", registry.data) as any;
+    const core = deserializeCollectionV1({ ...collection, publicKey: umiPk(expected.collection),
+      owner: umiPk(collection.owner.toBase58()), lamports: lamports(collection.lamports) });
+    if (reg.collection.toBase58() !== expected.collection ||
+        core.updateAuthority !== collectionAuthOf(new PublicKey(expected.registry)).toBase58()) {
+      return { pass: false, retry: false, reason: "deployment registry or collection authority mismatch" };
+    }
+  } catch {
+    return { pass: false, retry: false, reason: "invalid deployment accounts" };
+  }
+  return { pass: true };
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const transient = (e: unknown) => /429|Too Many Requests|rate|timeout|ECONN|fetch failed|503|502|pool exhausted/i.test(String(e));

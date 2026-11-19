@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
 import { PublicKey, Connection } from "@solana/web3.js";
+import { sigBytes } from "./program.ts";
 import { config } from "./config.ts";
 import { rarityOf } from "./rarity.ts";
 import { db, nowSec } from "./db.ts";
@@ -13,7 +14,7 @@ import { getCollection, getItem, heldBy, listCollections, mintedIndices, publicV
 import { reserve, ReserveError } from "./allocator.ts";
 import { getReservation, markAwaitingSubmit, markCancelled, markLanded, markRejected, touchReservation } from "./reservations.ts";
 import { fetchRegistry, isMinted } from "./program.ts";
-import { verifyItem, verifySingle } from "./verifier.ts";
+import { verifyItem, verifySingle, verifyDeployment, deploymentMessage } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
@@ -254,7 +255,7 @@ app.post("/single/mint", async (c) => {
 // the last /creator/stage/batch followed by /creator/stage/finish). While a
 // batched collection is still uploading, `acc` accumulates its ManifestItems and
 // `items` accumulates the light (bytes-dropped) StageItems for recordCollection.
-type Staging = { spec: DeploySpec; items: StageItem[]; staged?: Staged; acc?: ManifestItem[]; creator: string; collection?: string; registry?: string; manifestSig?: string; metaSig?: string; logoSig?: string; bannerSig?: string };
+type Staging = { spec: DeploySpec; items: StageItem[]; staged?: Staged; acc?: ManifestItem[]; creator: string; deployment?: { message: string; collection: string; registry: string; manifestSig: string; metaSig: string; logoSig?: string; bannerSig?: string }; logoSig?: string; bannerSig?: string };
 const staging = new Map<string, Staging>();
 const nftConn = () => new Connection(config.rpcUrls[0], "confirmed");
 
@@ -375,16 +376,22 @@ app.post("/creator/deploy", async (c) => {
   const manifestSig = s.staged.itemCount ? b.manifestSig : "";
   if (s.staged.itemCount && !isSig(manifestSig)) return c.json({ error: "manifestSig required" }, 400);
   if (!isSig(b.metaSig)) return c.json({ error: "metaSig required" }, 400);
+  const { logoSig, bannerSig } = s;
   try {
     const conn = nftConn();
     const { tx, registry } = await buildDeploy({
       connection: conn, creatorPubkey: new PublicKey(b.creator), payerPubkey: new PublicKey(payer), collectionPubkey: new PublicKey(b.collection),
       spec: s.spec, itemCount: s.staged.itemCount, manifestHash: s.staged.manifestHash, manifestSig, shuffleCommit: s.staged.shuffleCommit, metaSig: b.metaSig,
     });
-    s.collection = b.collection; s.registry = registry.toBase58(); s.manifestSig = manifestSig; s.metaSig = b.metaSig;
     const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
     tx.recentBlockhash = blockhash;
     tx.feePayer = new PublicKey(payer);
+    const deployment = { message: deploymentMessage(tx.compileMessage()), collection: b.collection,
+      registry: registry.toBase58(), manifestSig, metaSig: b.metaSig, logoSig, bannerSig };
+    if (s.deployment && s.deployment.message !== deployment.message) {
+      return c.json({ error: "this staged deployment is already bound to another transaction" }, 409);
+    }
+    s.deployment ??= deployment;
     return c.json({ transaction: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64"), lastValidBlockHeight, registry: registry.toBase58() });
   } catch (e) {
     console.error("[creator/deploy]", e);
@@ -412,15 +419,25 @@ app.post("/creator/collection-json", async (c) => {
 app.post("/creator/finalize", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
   const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
-  if (!s || !s.staged || !s.collection || !s.registry) return c.json({ error: "nothing to finalize for this stagingId" }, 404);
-  if (getCollection(s.spec.slug)) { staging.delete(b.stagingId); return c.json({ ok: true, slug: s.spec.slug, already: true }); }
-  // Record only once the registry actually exists on chain (the deploy tx landed).
-  const info = await nftConn().getAccountInfo(new PublicKey(s.registry)).catch(() => null);
-  if (!info) return c.json({ error: "registry not on chain yet; send the deploy tx, then retry" }, 409);
-  try {
-    recordCollection({ spec: s.spec, collectionPubkey: new PublicKey(s.collection), registry: new PublicKey(s.registry), creatorPubkey: new PublicKey(s.creator), staged: s.staged, items: s.items, manifestSig: s.manifestSig || "", metaSig: s.metaSig || "", logoSig: s.logoSig, bannerSig: s.bannerSig });
+  if (!s?.staged || !s.deployment) return c.json({ error: "nothing to finalize for this stagingId" }, 404);
+  try { sigBytes(b.deploySig); } catch { return c.json({ error: "deploySig must be a transaction signature" }, 400); }
+  const deployment = s.deployment;
+  const verified = await verifyDeployment(b.deploySig, deployment);
+  if (verified.pass === false) return c.json({ error: verified.reason }, verified.retry ? 503 : 400);
+  const existing = getCollection(s.spec.slug);
+  if (existing) {
+    if (existing.core_collection !== deployment.collection || existing.registry !== deployment.registry ||
+        existing.creator !== s.creator || existing.manifest_hash !== s.staged.manifestHash ||
+        existing.manifest_sig !== deployment.manifestSig || existing.meta_sig !== deployment.metaSig) {
+      return c.json({ error: "slug belongs to another collection" }, 409);
+    }
     staging.delete(b.stagingId);
-    return c.json({ ok: true, slug: s.spec.slug, collection: s.collection, registry: s.registry });
+    return c.json({ ok: true, slug: s.spec.slug, already: true });
+  }
+  try {
+    recordCollection({ spec: s.spec, collectionPubkey: new PublicKey(deployment.collection), registry: new PublicKey(deployment.registry), creatorPubkey: new PublicKey(s.creator), staged: s.staged, items: s.items, manifestSig: deployment.manifestSig, metaSig: deployment.metaSig, logoSig: deployment.logoSig, bannerSig: deployment.bannerSig });
+    staging.delete(b.stagingId);
+    return c.json({ ok: true, slug: s.spec.slug, collection: deployment.collection, registry: deployment.registry });
   } catch (e) {
     console.error("[creator/finalize]", e);
     return c.json({ error: "finalize failed: " + (e instanceof Error ? e.message : String(e)) }, 500);
