@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Connection, Keypair, Transaction } from "@solana/web3.js";
 import { utils } from "@coral-xyz/anchor";
 
@@ -8,7 +10,9 @@ assert.equal(new URL(endpoint).hostname, "127.0.0.1");
 process.env.RPC_URLS = endpoint;
 process.env.CLUSTER = "devnet";
 process.env.REGISTRAR_KEYPAIR = process.env.ANCHOR_WALLET!;
-process.env.DB_PATH = ":memory:";
+const scratch = mkdtempSync(join(tmpdir(), "iq-finalization-test-"));
+process.once("exit", () => rmSync(scratch, { recursive: true, force: true }));
+process.env.DB_PATH = join(scratch, "nft.sqlite");
 process.env.ARWEAVE_KEYPAIR = "";
 process.env.TENSOR_API_KEY = "";
 
