@@ -21,6 +21,7 @@ import { isAllowedCurrency, isSol, STOCK_CURRENCIES } from "./currencies.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { startTensorPoller, recentSales, activeListings, recentListings, tensorDiag } from "./tensor.ts";
+import { buildListTx, buildBuyTx, buildDelistTx } from "./tensor-trade.ts";
 import { poolStats } from "./rpcpool.ts";
 
 export const app = new Hono();
@@ -114,6 +115,7 @@ app.post("/c/:slug/reserve", async (c) => {
   if (rateLimited(clientIp(c))) return c.json({ error: "rate limited" }, 429);
   const col = getCollection(c.req.param("slug"));
   if (!col) return c.json({ error: "not found" }, 404);
+  if (!isAllowedCurrency(col.currency_mint ?? "SOL")) return c.json({ error: "currency not available" }, 403);
   const body = await c.req.json().catch(() => ({}));
   if (!isPubkey(body.wallet) || !isPubkey(body.burner)) return c.json({ error: "wallet and burner must be base58 pubkeys" }, 400);
   try {
@@ -167,6 +169,7 @@ app.post("/c/:slug/mint", async (c) => {
   const item = getItem(col.slug, r.item_index)!;
 
   if (r.state === "confirmed") return c.json({ status: "confirmed", index: r.item_index });
+  if (!isAllowedCurrency(col.currency_mint ?? "SOL")) return c.json({ error: "currency not available" }, 403);
   if (r.state !== "reserved" && r.state !== "awaiting_submit") return c.json({ error: `reservation is ${r.state}` }, 409);
   if (r.expires_at < nowSec()) return c.json({ error: "reservation expired" }, 409);
 
@@ -245,6 +248,7 @@ app.get("/owner/:wallet", (c) => {
 app.post("/single/mint", async (c) => {
   const col = getCollection(config.singleSlug);
   if (!col) return c.json({ error: "single-NFT collection not configured" }, 500);
+  if (!isAllowedCurrency(col.currency_mint ?? "SOL")) return c.json({ error: "currency not available" }, 403);
   const body = await c.req.json().catch(() => ({}));
   const { wallet, burner, inscriptionSig, metaSig, asset, name } = body ?? {};
   if (!isPubkey(wallet) || !isPubkey(burner) || !isPubkey(asset)) return c.json({ error: "wallet, burner, asset must be base58 pubkeys" }, 400);
@@ -309,7 +313,10 @@ const lightItems = (items: StageItem[]) => items.map((it) => ({ ...it, bytes: Bu
 // request. Large collections use begin/batch/finish below so no single request
 // carries the whole collection or runs the whole Arweave upload.
 // The non-SOL currencies a creator may price a collection in (SOL is implicit).
-app.get("/creator/currencies", (c) => c.json({ currencies: STOCK_CURRENCIES, checkout: "wallet-v1" }));
+app.get("/creator/currencies", (c) => c.json({
+  currencies: STOCK_CURRENCIES.filter(({ mint }) => isAllowedCurrency(mint)),
+  checkout: "wallet-v1",
+}));
 
 app.post("/creator/stage", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
@@ -380,6 +387,7 @@ app.post("/creator/deploy", async (c) => {
   const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
   if (!s) return c.json({ error: "unknown or expired stagingId" }, 404);
   if (!s.staged) return c.json({ error: "stage not finished; call /creator/stage/finish first" }, 409);
+  if (!isAllowedCurrency(s.spec.currency)) return c.json({ error: "currency not available" }, 403);
   if (!isPubkey(b.creator) || b.creator !== s.creator) return c.json({ error: "creator mismatch" }, 400);
   if (!isPubkey(b.collection)) return c.json({ error: "collection must be a base58 pubkey" }, 400);
   const payer = isPubkey(b.payer) ? b.payer : b.creator; // the wallet itself, or its burner
@@ -541,6 +549,40 @@ app.get("/c/:slug/listings", (c) => {
   const limit = Math.min(Number(c.req.query("limit") ?? 200) || 200, 500);
   const listings = activeListings(col.slug, limit);
   return c.json({ listings, floor: listings.length ? listings[0].price : 0, count: listings.length });
+});
+
+// Secondary-market trade transactions (Tensor), built server-side (the API key
+// stays here) and returned unsigned for the client to sign and send. Our
+// treasury is the broker, so our share of Tensor's taker fee comes back. The
+// trade settles on Tensor's program, not ours. A non-SOL currency is gated by
+// STOCK_ENABLED via isAllowedCurrency.
+app.post("/market/list", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  if (!isPubkey(b.mint) || !isPubkey(b.owner)) return c.json({ error: "mint and owner must be base58 pubkeys" }, 400);
+  const price = Number(b.price);
+  if (!Number.isFinite(price) || price <= 0) return c.json({ error: "price must be a positive number" }, 400);
+  const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
+  if (!isAllowedCurrency(currency)) return c.json({ error: "currency not available", currency }, 403);
+  try { return c.json(await buildListTx({ mint: b.mint, owner: b.owner, price, currency })); }
+  catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
+});
+
+app.post("/market/buy", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  if (!isPubkey(b.mint) || !isPubkey(b.buyer) || !isPubkey(b.owner)) return c.json({ error: "mint, buyer, owner must be base58 pubkeys" }, 400);
+  const maxPrice = Number(b.maxPrice);
+  if (!Number.isFinite(maxPrice) || maxPrice <= 0) return c.json({ error: "maxPrice must be a positive number" }, 400);
+  const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
+  if (!isAllowedCurrency(currency)) return c.json({ error: "currency not available", currency }, 403);
+  try { return c.json(await buildBuyTx({ mint: b.mint, buyer: b.buyer, owner: b.owner, maxPrice, currency })); }
+  catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
+});
+
+app.post("/market/delist", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  if (!isPubkey(b.mint) || !isPubkey(b.owner)) return c.json({ error: "mint and owner must be base58 pubkeys" }, 400);
+  try { return c.json(await buildDelistTx({ mint: b.mint, owner: b.owner })); }
+  catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
 });
 
 app.get("/stats", (c) => {

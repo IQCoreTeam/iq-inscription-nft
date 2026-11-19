@@ -106,4 +106,10 @@ export const config = {
   tensorApiKey: env("TENSOR_API_KEY", ""),
   tensorBase: net.tensorBase,
   tensorPollMs: Number(env("TENSOR_POLL_MS", "90000")),
+
+  // Stock-token (securities) currency, for minting and secondary trades. OFF by
+  // default: the program and backend support it, but a non-SOL currency is
+  // refused until this is set, which gates public stock collections behind the
+  // lawyer review + geo-fence. SOL is never gated. Flip to "true" to enable.
+  stockEnabled: env("STOCK_ENABLED", "false") === "true",
 };
