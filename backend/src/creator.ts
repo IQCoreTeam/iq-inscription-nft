@@ -18,7 +18,7 @@ import * as anchor from "@coral-xyz/anchor";
 import BN from "bn.js";
 import { config } from "./config.ts";
 import { db, nowSec } from "./db.ts";
-import { program, registryOf, collectionAuthOf, PLATFORM_TREASURY } from "./program.ts";
+import { program, registryOf, collectionAuthOf, PLATFORM_TREASURY, preparePaymentAccounts } from "./program.ts";
 import { uploadToArweave } from "./arweave.ts";
 import { assetUri } from "./metadata.ts";
 import { isSol } from "./currencies.ts";
@@ -203,6 +203,10 @@ export async function buildDeploy(args: {
     .instruction();
 
   const tx = new Transaction().add(...createIxs, initIx);
+  if (!isSol(args.spec.currency)) {
+    const mint = new PublicKey(args.spec.currency);
+    tx.add(...preparePaymentAccounts(args.payerPubkey, args.creatorPubkey, mint));
+  }
   // Deploy fee: creator -> platform treasury, atomic with the deploy (no extra signature).
   const fee = deployFee(args.itemCount);
   if (fee > 0) tx.add(SystemProgram.transfer({ fromPubkey: args.payerPubkey, toPubkey: PLATFORM_TREASURY, lamports: fee }));

@@ -17,7 +17,7 @@ import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
-import { isAllowedCurrency, isSol, currencyList } from "./currencies.ts";
+import { isAllowedCurrency, isSol, STOCK_CURRENCIES } from "./currencies.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
 import { startTensorPoller, recentSales, activeListings, recentListings, tensorDiag } from "./tensor.ts";
@@ -115,6 +115,7 @@ app.post("/c/:slug/reserve", async (c) => {
   if (rateLimited(clientIp(c))) return c.json({ error: "rate limited" }, 429);
   const col = getCollection(c.req.param("slug"));
   if (!col) return c.json({ error: "not found" }, 404);
+  if (!isAllowedCurrency(col.currency_mint ?? "SOL")) return c.json({ error: "currency not available" }, 403);
   const body = await c.req.json().catch(() => ({}));
   if (!isPubkey(body.wallet) || !isPubkey(body.burner)) return c.json({ error: "wallet and burner must be base58 pubkeys" }, 400);
   try {
@@ -168,8 +169,19 @@ app.post("/c/:slug/mint", async (c) => {
   const item = getItem(col.slug, r.item_index)!;
 
   if (r.state === "confirmed") return c.json({ status: "confirmed", index: r.item_index });
+  if (!isAllowedCurrency(col.currency_mint ?? "SOL")) return c.json({ error: "currency not available" }, 403);
   if (r.state !== "reserved" && r.state !== "awaiting_submit") return c.json({ error: `reservation is ${r.state}` }, 409);
   if (r.expires_at < nowSec()) return c.json({ error: "reservation expired" }, 409);
+
+  if (!isSol(col.currency_mint)) {
+    let registry;
+    try { registry = await fetchRegistry(new PublicKey(col.registry)); }
+    catch { return c.json({ error: "registry unavailable, retry" }, 503); }
+    if (registry.currency !== col.currency_mint || registry.priceLamports !== col.price_lamports ||
+        registry.treasury !== col.treasury || registry.depositLamports !== 0) {
+      return c.json({ error: "Mint terms changed on chain. Checkout is paused until the collection is updated." }, 422);
+    }
+  }
 
   // Replay: already verified, re-issue with a fresh blockhash. No new verification.
   if (r.state === "awaiting_submit") {
@@ -236,6 +248,7 @@ app.get("/owner/:wallet", (c) => {
 app.post("/single/mint", async (c) => {
   const col = getCollection(config.singleSlug);
   if (!col) return c.json({ error: "single-NFT collection not configured" }, 500);
+  if (!isAllowedCurrency(col.currency_mint ?? "SOL")) return c.json({ error: "currency not available" }, 403);
   const body = await c.req.json().catch(() => ({}));
   const { wallet, burner, inscriptionSig, metaSig, asset, name } = body ?? {};
   if (!isPubkey(wallet) || !isPubkey(burner) || !isPubkey(asset)) return c.json({ error: "wallet, burner, asset must be base58 pubkeys" }, 400);
@@ -268,11 +281,13 @@ function parseSpec(b: any): { spec: DeploySpec } | { error: string; code: 400 | 
   if (typeof b.symbol !== "string" || !b.symbol) return { error: "symbol required", code: 400 };
   const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
   if (!isAllowedCurrency(currency)) return { error: "currency must be SOL or an allowed mint", code: 400 };
-  const price = Number(b.price) || 0;
+  const price = Number(b.price ?? 0);
+  if (!Number.isSafeInteger(price) || price < 0) return { error: "price must be a non-negative integer in base units", code: 400 };
   // The deposit is always SOL. For a token-priced collection it cannot be netted
   // against a token price (different units) and the program requires
   // deposit <= price, so a token collection takes no SOL deposit in v1.
-  const deposit = isSol(currency) ? Number(b.deposit) || 0 : 0;
+  const deposit = isSol(currency) ? Number(b.deposit ?? 0) : 0;
+  if (!Number.isSafeInteger(deposit) || deposit < 0) return { error: "deposit must be a non-negative integer in lamports", code: 400 };
   if (deposit > price) return { error: "deposit cannot exceed price", code: 400 };
   return { spec: { slug, name: b.name, symbol: b.symbol, description: typeof b.description === "string" ? b.description : "", price, deposit, royaltyBps: Number(b.royaltyBps) || 0, sequential: !!b.sequential, currency } };
 }
@@ -298,7 +313,10 @@ const lightItems = (items: StageItem[]) => items.map((it) => ({ ...it, bytes: Bu
 // request. Large collections use begin/batch/finish below so no single request
 // carries the whole collection or runs the whole Arweave upload.
 // The non-SOL currencies a creator may price a collection in (SOL is implicit).
-app.get("/creator/currencies", (c) => c.json({ currencies: currencyList() }));
+app.get("/creator/currencies", (c) => c.json({
+  currencies: STOCK_CURRENCIES.filter(({ mint }) => isAllowedCurrency(mint)),
+  checkout: "wallet-v1",
+}));
 
 app.post("/creator/stage", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
@@ -369,6 +387,7 @@ app.post("/creator/deploy", async (c) => {
   const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
   if (!s) return c.json({ error: "unknown or expired stagingId" }, 404);
   if (!s.staged) return c.json({ error: "stage not finished; call /creator/stage/finish first" }, 409);
+  if (!isAllowedCurrency(s.spec.currency)) return c.json({ error: "currency not available" }, 403);
   if (!isPubkey(b.creator) || b.creator !== s.creator) return c.json({ error: "creator mismatch" }, 400);
   if (!isPubkey(b.collection)) return c.json({ error: "collection must be a base58 pubkey" }, 400);
   const payer = isPubkey(b.payer) ? b.payer : b.creator; // the wallet itself, or its burner

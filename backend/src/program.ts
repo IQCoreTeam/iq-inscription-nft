@@ -10,7 +10,7 @@ import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { publicKey as umiPk } from "@metaplex-foundation/umi";
 import { fetchAssetsByCollection } from "@metaplex-foundation/mpl-core";
 import { config, idl, MPL_CORE } from "./config.ts";
-import { isSol, tokenProgramFor, ataFor, SOL_SENTINEL } from "./currencies.ts";
+import { isSol, TOKEN_2022_PROGRAM, createPaymentAccount, ataFor, SOL_SENTINEL } from "./currencies.ts";
 
 const connection = new Connection(config.rpcUrls[0], "confirmed");
 const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(config.registrar), {
@@ -50,14 +50,20 @@ function splAccounts(currencyMint: string | null | undefined, treasury: PublicKe
     return { currencyMint: null, minterToken: null, treasuryToken: null, platformToken: null, tokenProgram: null };
   }
   const mint = new PublicKey(currencyMint as string);
-  const prog = tokenProgramFor(currencyMint as string);
+
   return {
     currencyMint: mint,
-    minterToken: ataFor(minter, mint, prog),
-    treasuryToken: ataFor(treasury, mint, prog),
-    platformToken: ataFor(PLATFORM_TREASURY, mint, prog),
-    tokenProgram: prog,
+    minterToken: ataFor(minter, mint),
+    treasuryToken: ataFor(treasury, mint),
+    platformToken: ataFor(PLATFORM_TREASURY, mint),
+    tokenProgram: TOKEN_2022_PROGRAM,
   };
+}
+
+export function preparePaymentAccounts(payer: PublicKey, treasury: PublicKey, mint: PublicKey) {
+  const accounts = [createPaymentAccount(payer, treasury, mint)];
+  if (!treasury.equals(PLATFORM_TREASURY)) accounts.push(createPaymentAccount(payer, PLATFORM_TREASURY, mint));
+  return accounts;
 }
 
 export function buildRegisterItemIx(t: Target, a: {
@@ -149,21 +155,27 @@ export type OnChainRegistry = {
 // the same offsets in both layouts, and the currency field (if present) is
 // detected by the account size. So the backend reads old and new registries
 // alike, which is what lets it deploy before the program upgrade + migration.
+const REGISTRY_DISCRIMINATOR = Buffer.from(idl.accounts.find((a: { name: string }) => a.name === "Registry").discriminator);
 const FROZEN_END = 291; // 8 disc + fixed fields + 1 frozen byte
 export async function fetchRegistry(registry: PublicKey): Promise<OnChainRegistry> {
   const info = await connection.getAccountInfo(registry, "confirmed");
   if (!info) throw new Error(`registry ${registry.toBase58()} not found on chain`);
   const d = info.data;
+  if (!info.owner.equals(config.programId) || d.length < FROZEN_END + 4 ||
+      !d.subarray(0, REGISTRY_DISCRIMINATOR.length).equals(REGISTRY_DISCRIMINATOR)) {
+    throw new Error(`invalid registry account ${registry.toBase58()}`);
+  }
   const pk = (o: number) => new PublicKey(d.subarray(o, o + 32)).toBase58();
   const maxSupply = d.readUInt32LE(138);
-  const oldTotal = FROZEN_END + 4 + Math.ceil(maxSupply / 8);
+  const bitmapLength = Math.ceil(maxSupply / 8);
+  const oldTotal = FROZEN_END + 4 + bitmapLength;
   const newLayout = d.length === oldTotal + 32;
   if (!newLayout && d.length !== oldTotal) {
     throw new Error(`registry ${registry.toBase58()} unexpected size ${d.length}`);
   }
   const currency = newLayout ? pk(FROZEN_END) : SOL_SENTINEL;
   const vecOff = newLayout ? FROZEN_END + 32 : FROZEN_END;
-  const vecLen = d.readUInt32LE(vecOff);
+  if (d.readUInt32LE(vecOff) !== bitmapLength) throw new Error(`invalid registry bitmap ${registry.toBase58()}`);
   return {
     minted: d.readUInt32LE(142),
     maxSupply,
@@ -174,7 +186,7 @@ export async function fetchRegistry(registry: PublicKey): Promise<OnChainRegistr
     registrar: pk(42),
     admin: pk(74),
     currency: currency === SOL_SENTINEL ? "SOL" : currency,
-    bitmap: Uint8Array.from(d.subarray(vecOff + 4, vecOff + 4 + vecLen)),
+    bitmap: Uint8Array.from(d.subarray(vecOff + 4, vecOff + 4 + bitmapLength)),
   };
 }
 
