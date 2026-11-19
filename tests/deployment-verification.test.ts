@@ -14,7 +14,7 @@ let unavailable = false;
 mock.module("../backend/src/config.ts", () => ({ config: { rpcUrls: ["http://127.0.0.1:1"], programId }, MPL_CORE: coreProgram }));
 mock.module("../backend/src/program.ts", () => ({
   collectionAuthOf: () => authority,
-  program: { coder: { accounts: { decode: () => ({ collection }) } } },
+  decodeRegistry: () => ({ collection: collection.toBase58() }),
 }));
 mock.module("../backend/src/rpcpool.ts", () => ({
   withConnection: async (fn: any) => {

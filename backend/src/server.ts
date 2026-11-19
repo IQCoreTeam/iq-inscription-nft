@@ -6,14 +6,13 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
 import { PublicKey, Connection } from "@solana/web3.js";
-import { sigBytes } from "./program.ts";
 import { config } from "./config.ts";
 import { rarityOf } from "./rarity.ts";
 import { db, nowSec } from "./db.ts";
 import { getCollection, getItem, heldBy, listCollections, mintedIndices, publicView } from "./collections.ts";
 import { reserve, ReserveError } from "./allocator.ts";
 import { getReservation, markAwaitingSubmit, markCancelled, markLanded, markRejected, touchReservation } from "./reservations.ts";
-import { fetchRegistry, isMinted } from "./program.ts";
+import { fetchRegistry, isMinted, sigBytes } from "./program.ts";
 import { verifyItem, verifySingle, verifyDeployment, deploymentMessage } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
@@ -418,8 +417,9 @@ app.post("/creator/collection-json", async (c) => {
 
 app.post("/creator/finalize", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
-  const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
+  const s = typeof b?.stagingId === "string" ? staging.get(b.stagingId) : undefined;
   if (!s?.staged || !s.deployment) return c.json({ error: "nothing to finalize for this stagingId" }, 404);
+  if (!isSig(b.deploySig)) return c.json({ error: "deploySig must be a transaction signature" }, 400);
   try { sigBytes(b.deploySig); } catch { return c.json({ error: "deploySig must be a transaction signature" }, 400); }
   const deployment = s.deployment;
   const verified = await verifyDeployment(b.deploySig, deployment);

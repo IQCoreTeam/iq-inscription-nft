@@ -132,6 +132,7 @@ export type OnChainSlot = {
 };
 
 export type OnChainRegistry = {
+  collection: string;
   minted: number;
   maxSupply: number;
   priceLamports: number;
@@ -150,21 +151,19 @@ export type OnChainRegistry = {
 // detected by the account size. So the backend reads old and new registries
 // alike, which is what lets it deploy before the program upgrade + migration.
 const FROZEN_END = 291; // 8 disc + fixed fields + 1 frozen byte
-export async function fetchRegistry(registry: PublicKey): Promise<OnChainRegistry> {
-  const info = await connection.getAccountInfo(registry, "confirmed");
-  if (!info) throw new Error(`registry ${registry.toBase58()} not found on chain`);
-  const d = info.data;
+export function decodeRegistry(d: Buffer): OnChainRegistry {
   const pk = (o: number) => new PublicKey(d.subarray(o, o + 32)).toBase58();
   const maxSupply = d.readUInt32LE(138);
   const oldTotal = FROZEN_END + 4 + Math.ceil(maxSupply / 8);
   const newLayout = d.length === oldTotal + 32;
   if (!newLayout && d.length !== oldTotal) {
-    throw new Error(`registry ${registry.toBase58()} unexpected size ${d.length}`);
+    throw new Error(`unexpected registry size ${d.length}`);
   }
   const currency = newLayout ? pk(FROZEN_END) : SOL_SENTINEL;
   const vecOff = newLayout ? FROZEN_END + 32 : FROZEN_END;
   const vecLen = d.readUInt32LE(vecOff);
   return {
+    collection: pk(10),
     minted: d.readUInt32LE(142),
     maxSupply,
     priceLamports: Number(d.readBigUInt64LE(146)),
@@ -176,6 +175,12 @@ export async function fetchRegistry(registry: PublicKey): Promise<OnChainRegistr
     currency: currency === SOL_SENTINEL ? "SOL" : currency,
     bitmap: Uint8Array.from(d.subarray(vecOff + 4, vecOff + 4 + vecLen)),
   };
+}
+
+export async function fetchRegistry(registry: PublicKey): Promise<OnChainRegistry> {
+  const info = await connection.getAccountInfo(registry, "confirmed");
+  if (!info) throw new Error(`registry ${registry.toBase58()} not found on chain`);
+  return decodeRegistry(info.data);
 }
 
 export const isMinted = (bitmap: Uint8Array, index: number): boolean =>

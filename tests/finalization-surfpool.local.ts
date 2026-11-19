@@ -38,7 +38,9 @@ const built = await post("/creator/deploy", {
   stagingId, creator, collection: collection.publicKey.toBase58(),
   metaSig: utils.bytes.bs58.encode(new Uint8Array(64).fill(43)),
 });
-const connection = new Connection(endpoint, "confirmed");
+const wsEndpoint = process.env.IQ_TEST_WS_URL;
+if (wsEndpoint) assert.equal(new URL(wsEndpoint).hostname, "127.0.0.1");
+const connection = new Connection(endpoint, { commitment: "confirmed", wsEndpoint });
 const tx = Transaction.from(Buffer.from(built.transaction, "base64"));
 tx.sign(payer, collection);
 const deploySig = await connection.sendRawTransaction(tx.serialize());

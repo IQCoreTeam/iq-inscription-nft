@@ -16,7 +16,7 @@ import type { CollectionRow, ItemRow, ReservationRow } from "./db.ts";
 import { Message, PublicKey } from "@solana/web3.js";
 import { deserializeCollectionV1 } from "@metaplex-foundation/mpl-core";
 import { publicKey as umiPk, lamports } from "@metaplex-foundation/umi";
-import { program, collectionAuthOf } from "./program.ts";
+import { decodeRegistry, collectionAuthOf } from "./program.ts";
 
 // Set once, to our primary, and never rotated: the SDK's RPC is a process-global
 // and only linked-list / session walks go through it (inline reads cost zero).
@@ -61,10 +61,10 @@ export async function verifyDeployment(signature: string, expected: {
     return { pass: false, retry: false, reason: "deployment account owner mismatch" };
   }
   try {
-    const reg = program.coder.accounts.decode("registry", registry.data) as any;
+    const reg = decodeRegistry(registry.data);
     const core = deserializeCollectionV1({ ...collection, publicKey: umiPk(expected.collection),
       owner: umiPk(collection.owner.toBase58()), lamports: lamports(collection.lamports) });
-    if (reg.collection.toBase58() !== expected.collection ||
+    if (reg.collection !== expected.collection ||
         core.updateAuthority !== collectionAuthOf(new PublicKey(expected.registry)).toBase58()) {
       return { pass: false, retry: false, reason: "deployment registry or collection authority mismatch" };
     }
