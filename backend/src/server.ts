@@ -17,7 +17,7 @@ import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
-import { isAllowedCurrency, isSol, currencyList } from "./currencies.ts";
+import { isAllowedCurrency, isSol, currencyList, currencyInfo } from "./currencies.ts";
 import { countryOf, stockAllowed } from "./geo.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
@@ -554,16 +554,31 @@ app.get("/c/:slug/listings", (c) => {
 // Secondary-market trade transactions (Tensor), built server-side (the API key
 // stays here) and returned unsigned for the client to sign and send. Our
 // treasury is the broker, so our share of Tensor's taker fee comes back. The
-// trade settles on Tensor's program, not ours. A non-SOL currency is gated by
-// geo.ts stockAllowed via isAllowedCurrency.
+// trade settles on Tensor's program, not ours.
+//
+// Only items minted through this registry trade here, and always in their
+// collection's own currency: a collection priced in a stock token lists and
+// sells in that token and nothing else, a SOL collection in SOL. The client does
+// not choose; a `currency` it sends is only checked against the collection's.
+// A stock collection the caller may not see (geo.ts) has no market either.
+const slotSlug = db.query<{ slug: string }, [string]>("SELECT slug FROM slot WHERE asset = ?");
+function tradeCurrency(c: Context, asset: string, asked: unknown): { currency: string } | { error: string; code: 400 | 404 } {
+  const slot = slotSlug.get(asset);
+  const col = slot && colFor(c, slot.slug);
+  if (!col) return { error: "not a minted item in this registry", code: 404 };
+  const currency = col.currency_mint ?? "SOL";
+  if (typeof asked === "string" && asked && (isSol(asked) ? "SOL" : asked) !== currency) return { error: `${col.name} trades in ${currencyInfo(col.currency_mint).symbol} only`, code: 400 };
+  return { currency };
+}
+
 app.post("/market/list", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   if (!isPubkey(b.mint) || !isPubkey(b.owner)) return c.json({ error: "mint and owner must be base58 pubkeys" }, 400);
   const price = Number(b.price);
   if (!Number.isFinite(price) || price <= 0) return c.json({ error: "price must be a positive number" }, 400);
-  const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
-  if (!isAllowedCurrency(currency, stockAllowed(c))) return c.json({ error: "currency not available", currency }, 403);
-  try { return c.json(await buildListTx({ mint: b.mint, owner: b.owner, price, currency })); }
+  const t = tradeCurrency(c, b.mint, b.currency);
+  if ("error" in t) return c.json({ error: t.error }, t.code);
+  try { return c.json(await buildListTx({ mint: b.mint, owner: b.owner, price, currency: t.currency })); }
   catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
 });
 
@@ -572,12 +587,14 @@ app.post("/market/buy", async (c) => {
   if (!isPubkey(b.mint) || !isPubkey(b.buyer) || !isPubkey(b.owner)) return c.json({ error: "mint, buyer, owner must be base58 pubkeys" }, 400);
   const maxPrice = Number(b.maxPrice);
   if (!Number.isFinite(maxPrice) || maxPrice <= 0) return c.json({ error: "maxPrice must be a positive number" }, 400);
-  const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
-  if (!isAllowedCurrency(currency, stockAllowed(c))) return c.json({ error: "currency not available", currency }, 403);
-  try { return c.json(await buildBuyTx({ mint: b.mint, buyer: b.buyer, owner: b.owner, maxPrice, currency })); }
+  const t = tradeCurrency(c, b.mint, b.currency);
+  if ("error" in t) return c.json({ error: t.error }, t.code);
+  try { return c.json(await buildBuyTx({ mint: b.mint, buyer: b.buyer, owner: b.owner, maxPrice, currency: t.currency })); }
   catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
 });
 
+// Cancelling is always open, from anywhere: a seller must be able to take an
+// item back.
 app.post("/market/delist", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   if (!isPubkey(b.mint) || !isPubkey(b.owner)) return c.json({ error: "mint and owner must be base58 pubkeys" }, 400);

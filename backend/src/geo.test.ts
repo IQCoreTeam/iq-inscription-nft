@@ -76,8 +76,8 @@ test("a blocked country cannot reserve, mint, deploy or trade in a stock currenc
   const spec = { slug: "geo-new", creator: k(), name: "New", symbol: "NEW", price: 1000, currency: NVDA };
   const refused = await post("/creator/stage/begin", spec, "US");
   expect([refused.status, ((await refused.json()) as any).error]).toEqual([400, "currency must be SOL or an allowed mint"]);
-  expect((await post("/market/list", { mint: k(), owner: k(), price: 1, currency: NVDA }, "US")).status).toBe(403);
-  expect((await post("/market/buy", { mint: k(), buyer: k(), owner: k(), maxPrice: 1, currency: NVDA }, "US")).status).toBe(403);
+  expect((await post("/market/list", { mint: assets["geo-stock"], owner: k(), price: 1 }, "US")).status).toBe(404);
+  expect((await post("/market/buy", { mint: assets["geo-stock"], buyer: k(), owner: k(), maxPrice: 1 }, "US")).status).toBe(404);
 
   // Staged from an allowed country, then the deploy is asked for from a blocked one.
   const begun = await post("/creator/stage/begin", spec, "KR");
@@ -106,4 +106,22 @@ test("the master switch off hides stock currencies everywhere", async () => {
   expect((await get("/creator/currencies", "KR")).body.currencies).toEqual([]);
   expect(await slugs("KR")).toEqual(["geo-sol"]);
   config.stockEnabled = true;
+});
+
+test("an item trades only in its collection's currency, and only if minted here", async () => {
+  const k = () => Keypair.generate().publicKey.toBase58();
+  const list = async (mint: string, currency?: string) => {
+    const res = await post("/market/list", { mint, owner: k(), price: 1, currency }, "KR");
+    return [res.status, ((await res.json()) as any).error];
+  };
+  // Past the currency rule the request reaches Tensor, which has no key in tests.
+  const reachedTensor = [400, "tensor api key not configured"];
+  expect(await list(assets["geo-stock"])).toEqual(reachedTensor);
+  expect(await list(assets["geo-stock"], NVDA)).toEqual(reachedTensor);
+  expect(await list(assets["geo-stock"], "SOL")).toEqual([400, "geo-stock trades in NVDA only"]);
+  expect(await list(assets["geo-sol"])).toEqual(reachedTensor);
+  expect(await list(assets["geo-sol"], NVDA)).toEqual([400, "geo-sol trades in SOL only"]);
+  expect(await list(k())).toEqual([404, "not a minted item in this registry"]);
+  const buy = await post("/market/buy", { mint: assets["geo-sol"], buyer: k(), owner: k(), maxPrice: 1, currency: NVDA }, "KR");
+  expect(buy.status).toBe(400);
 });
