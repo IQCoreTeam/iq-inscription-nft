@@ -12,7 +12,7 @@ import { db, nowSec, type CollectionRow } from "./db.ts";
 import { getCollection, getItem, heldBy, listCollections, mintedIndices, publicView } from "./collections.ts";
 import { reserve, ReserveError } from "./allocator.ts";
 import { getReservation, markAwaitingSubmit, markCancelled, markLanded, markRejected, touchReservation } from "./reservations.ts";
-import { fetchRegistry, isMinted } from "./program.ts";
+import { fetchRegistry, isMinted, royaltyBps } from "./program.ts";
 import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
@@ -21,7 +21,7 @@ import { isAllowedCurrency, isSol, currencyList, currencyInfo } from "./currenci
 import { countryOf, stockAllowed } from "./geo.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
-import { startTensorPoller, recentSales, activeListings, recentListings, tensorDiag } from "./tensor.ts";
+import { startTensorPoller, recentSales, activeListings, recentListings, marketSummary, tensorDiag } from "./tensor.ts";
 import { buildListTx, buildBuyTx, buildDelistTx } from "./tensor-trade.ts";
 import { poolStats } from "./rpcpool.ts";
 
@@ -547,8 +547,16 @@ app.get("/c/:slug/listings", (c) => {
   const col = colFor(c);
   if (!col) return c.json({ error: "not found" }, 404);
   const limit = Math.min(Number(c.req.query("limit") ?? 200) || 200, 500);
-  const listings = activeListings(col.slug, limit);
+  const rarity = rarityOf(col.slug);
+  const listings = activeListings(col.slug, limit).map((l) => ({ ...l, rarity: (l.index != null && rarity?.get(l.index)?.tier) || null }));
   return c.json({ listings, floor: listings.length ? listings[0].price : 0, count: listings.length });
+});
+
+// The market's collection list: every collection this caller may see, with its
+// floor, listed count and 24h change, the most recently sold first.
+app.get("/market", (c) => {
+  const rows = listCollections().filter((col) => col.max_supply > 0 && visible(c, col)).map((col) => ({ ...publicView(col), ...marketSummary(col.slug) }));
+  return c.json({ collections: rows.sort((a, b) => b.lastSaleAt - a.lastSaleAt) });
 });
 
 // Secondary-market trade transactions (Tensor), built server-side (the API key
@@ -562,13 +570,13 @@ app.get("/c/:slug/listings", (c) => {
 // not choose; a `currency` it sends is only checked against the collection's.
 // A stock collection the caller may not see (geo.ts) has no market either.
 const slotSlug = db.query<{ slug: string }, [string]>("SELECT slug FROM slot WHERE asset = ?");
-function tradeCurrency(c: Context, asset: string, asked: unknown): { currency: string } | { error: string; code: 400 | 404 } {
+function tradeCurrency(c: Context, asset: string, asked: unknown): { currency: string; collection: string } | { error: string; code: 400 | 404 } {
   const slot = slotSlug.get(asset);
   const col = slot && colFor(c, slot.slug);
   if (!col) return { error: "not a minted item in this registry", code: 404 };
   const currency = col.currency_mint ?? "SOL";
   if (typeof asked === "string" && asked && (isSol(asked) ? "SOL" : asked) !== currency) return { error: `${col.name} trades in ${currencyInfo(col.currency_mint).symbol} only`, code: 400 };
-  return { currency };
+  return { currency, collection: col.core_collection };
 }
 
 app.post("/market/list", async (c) => {
@@ -589,7 +597,9 @@ app.post("/market/buy", async (c) => {
   if (!Number.isFinite(maxPrice) || maxPrice <= 0) return c.json({ error: "maxPrice must be a positive number" }, 400);
   const t = tradeCurrency(c, b.mint, b.currency);
   if ("error" in t) return c.json({ error: t.error }, t.code);
-  try { return c.json(await buildBuyTx({ mint: b.mint, buyer: b.buyer, owner: b.owner, maxPrice, currency: t.currency })); }
+  // royaltyBps lets the client split Tensor's total into price, creator royalty
+  // and marketplace fee.
+  try { return c.json({ ...(await buildBuyTx({ mint: b.mint, buyer: b.buyer, owner: b.owner, maxPrice, currency: t.currency })), royaltyBps: await royaltyBps(t.collection).catch(() => null) }); }
   catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
 });
 

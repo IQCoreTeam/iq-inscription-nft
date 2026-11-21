@@ -173,19 +173,40 @@ export function startTensorPoller(): void {
   setInterval(() => void syncAll(), config.tensorPollMs);
 }
 
-export type ActiveListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscriptionSig: string | null };
+// lastSale = what this item last sold for (0 if it never did); listedAt = the
+// LIST tx time. The market sorts on both.
+export type ActiveListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscriptionSig: string | null; listedAt: number; lastSale: number };
 
 const listingQ = db.query<
-  { item_index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscription_sig: string | null },
+  { item_index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscription_sig: string | null; listed_at: number; last_sale: number | null },
   [string, number]
 >(
-  `SELECT listing.item_index, listing.asset, listing.price, listing.seller, listing.source, slot.inscription_sig
+  `SELECT listing.item_index, listing.asset, listing.price, listing.seller, listing.source, slot.inscription_sig, listing.listed_at,
+          (SELECT price FROM sale WHERE sale.asset = listing.asset ORDER BY block_time DESC LIMIT 1) AS last_sale
    FROM listing LEFT JOIN slot ON slot.slug = listing.slug AND slot.asset = listing.asset
    WHERE listing.slug = ? ORDER BY listing.price ASC LIMIT ?`,
 );
 
 export function activeListings(slug: string, limit: number): ActiveListing[] {
-  return listingQ.all(slug, limit).map((r) => ({ index: r.item_index, asset: r.asset, price: r.price, seller: r.seller, source: r.source, inscriptionSig: r.inscription_sig }));
+  return listingQ.all(slug, limit).map((r) => ({ index: r.item_index, asset: r.asset, price: r.price, seller: r.seller, source: r.source, inscriptionSig: r.inscription_sig, listedAt: r.listed_at, lastSale: r.last_sale ?? 0 }));
+}
+
+// A collection's line in the market list. change24h compares the newest sale
+// with the newest sale that is at least a day old, in percent; 0 until both
+// exist. lastSaleAt orders the list: a sale bumps its collection to the top.
+const summaryQ = db.query<{ floor: number | null; listed: number; last_sale_at: number | null }, [string]>(
+  `SELECT (SELECT MIN(price) FROM listing WHERE slug = ?1) AS floor,
+          (SELECT COUNT(*) FROM listing WHERE slug = ?1) AS listed,
+          (SELECT MAX(block_time) FROM sale WHERE slug = ?1) AS last_sale_at`,
+);
+const salePriceAtQ = db.query<{ price: number }, [string, number]>("SELECT price FROM sale WHERE slug = ? AND block_time <= ? ORDER BY block_time DESC LIMIT 1");
+export function marketSummary(slug: string) {
+  const s = summaryQ.get(slug)!;
+  const now = salePriceAtQ.get(slug, nowSec()), dayAgo = salePriceAtQ.get(slug, nowSec() - 86400);
+  return {
+    floor: s.floor ?? 0, listed: s.listed, lastSaleAt: s.last_sale_at ?? 0,
+    change24h: now && dayAgo && dayAgo.price ? ((now.price - dayAgo.price) / dayAgo.price) * 100 : 0,
+  };
 }
 
 export type RecentListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null; listedAt: number; inscriptionSig: string | null };

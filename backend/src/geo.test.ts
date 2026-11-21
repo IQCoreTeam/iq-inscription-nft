@@ -125,3 +125,17 @@ test("an item trades only in its collection's currency, and only if minted here"
   const buy = await post("/market/buy", { mint: assets["geo-sol"], buyer: k(), owner: k(), maxPrice: 1, currency: NVDA }, "KR");
   expect(buy.status).toBe(400);
 });
+
+test("the market lists visible collections, the latest sale first", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  db.run("INSERT INTO sale(tx_id,slug,item_index,asset,price,buyer,seller,source,block_time) VALUES('t1','geo-stock',1,?1,100,'b','s','TCOMP',?2)", [assets["geo-stock"], now - 90000]);
+  db.run("INSERT INTO sale(tx_id,slug,item_index,asset,price,buyer,seller,source,block_time) VALUES('t2','geo-stock',1,?1,150,'b','s','TCOMP',?2)", [assets["geo-stock"], now - 60]);
+  db.run("INSERT INTO listing(slug,item_index,asset,price,seller,source,listed_at,updated_at) VALUES('geo-stock',1,?1,200,'s','TCOMP',?2,?2)", [assets["geo-stock"], now]);
+  const kr = (await get("/market", "KR")).body.collections;
+  expect(kr.map((r: any) => r.slug)).toEqual(["geo-stock", "geo-sol"]);
+  expect(kr[0]).toMatchObject({ floor: 200, listed: 1, change24h: 50, currency: { symbol: "NVDA" } });
+  expect(kr[1]).toMatchObject({ floor: 0, listed: 0, lastSaleAt: 0, change24h: 0 });
+  expect((await get("/market", "US")).body.collections.map((r: any) => r.slug)).toEqual(["geo-sol"]);
+  const [l] = (await get("/c/geo-stock/listings", "KR")).body.listings;
+  expect(l).toMatchObject({ asset: assets["geo-stock"], price: 200, lastSale: 150, listedAt: now, rarity: null });
+});

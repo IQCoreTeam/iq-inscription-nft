@@ -8,7 +8,7 @@ import * as anchor from "@coral-xyz/anchor";
 import { Connection, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { publicKey as umiPk } from "@metaplex-foundation/umi";
-import { fetchAssetsByCollection } from "@metaplex-foundation/mpl-core";
+import { fetchAssetsByCollection, fetchCollection } from "@metaplex-foundation/mpl-core";
 import { config, idl, MPL_CORE } from "./config.ts";
 import { isSol, tokenProgramFor, ataFor, SOL_SENTINEL } from "./currencies.ts";
 
@@ -192,6 +192,18 @@ export function mintedIndicesOf(bitmap: Uint8Array, maxSupply: number): number[]
 // sigs taken from the Attributes our program wrote. The on-chain index -> asset
 // map, and what makes a wiped database a restart.
 const umi = createUmi(config.rpcUrls[0], { commitment: "confirmed" });
+// The creator royalty a collection carries on chain (its Core Royalties plugin),
+// in basis points. Fixed at deploy, so it is read once per collection.
+const royaltyCache = new Map<string, number>();
+export async function royaltyBps(collection: string): Promise<number> {
+  let bps = royaltyCache.get(collection);
+  if (bps === undefined) {
+    bps = (await fetchCollection(umi, umiPk(collection))).royalties?.basisPoints ?? 0;
+    royaltyCache.set(collection, bps);
+  }
+  return bps;
+}
+
 export async function fetchCollectionAssets(collection: PublicKey): Promise<OnChainSlot[]> {
   const assets = await fetchAssetsByCollection(umi, umiPk(collection.toBase58()));
   const out: OnChainSlot[] = [];
