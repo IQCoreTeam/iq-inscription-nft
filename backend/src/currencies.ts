@@ -1,9 +1,11 @@
 // The mints a collection may price its mint in, besides native SOL. The program
 // accepts any mint as the registry `currency`; this list is what the backend
-// exposes and displays (symbol, decimals, issuer) and the token program its ATAs
-// use. transfer_checked reads decimals from the mint on chain, so the decimals
-// here are display-only. On devnet any valid mint is allowed (test flexibility);
-// on mainnet only SOL + the known list, so a typo can never become the price.
+// offers and displays. It is the tokenized stocks one issuer has on Solana
+// (Backpack Securities), read from Jupiter's verified token list and refreshed
+// while the server runs, so a newly issued stock appears without a deploy.
+// transfer_checked reads decimals from the mint on chain, so the decimals here
+// are display-only. On devnet any valid mint is allowed (test flexibility); on
+// mainnet only SOL + this list, so a typo can never become the price.
 
 import { PublicKey } from "@solana/web3.js";
 import { config } from "./config.ts";
@@ -14,17 +16,33 @@ export const ASSOCIATED_TOKEN_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiq
 // The registry stores Pubkey::default() (all ones in base58) to mean native SOL.
 export const SOL_SENTINEL = PublicKey.default.toBase58();
 
-export type CurrencyInfo = { mint: string; symbol: string; decimals: number; issuer: string };
+// name = the company or fund ("Nvidia"); issuer = who issued the token.
+export type CurrencyInfo = { mint: string; symbol: string; decimals: number; issuer: string; name?: string };
 
-// Tokenized stocks on Solana (Backpack Securities via Sunrise, and xStocks). All
-// Token-2022. Verified mints; see the tensor-tx-api memory.
-const LIST: CurrencyInfo[] = [
-  { mint: "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh", symbol: "NVDAx", decimals: 8, issuer: "xStocks" },
-  { mint: "NVDAVuiB7hwd3m5Wa1JuHNovPaPG6BH1QNztbKFxNjv", symbol: "NVDA", decimals: 6, issuer: "Backpack Securities" },
-  { mint: "BLKKYfF41c6xRPrtX1rdYbxLE1xxEdZUnxQsB5hcZ8Nf", symbol: "BLK", decimals: 6, issuer: "Backpack Securities" },
-  { mint: "SPYBo66VJPFjh1pXMb9Le53kDYWTK1zzYVDeVRWtsbi", symbol: "SPY", decimals: 6, issuer: "Backpack Securities" },
+const ISSUER = "Backpack Securities";
+// Offered until the first refresh lands (and if it never does). All Token-2022.
+let list: CurrencyInfo[] = [
+  { mint: "NVDAVuiB7hwd3m5Wa1JuHNovPaPG6BH1QNztbKFxNjv", symbol: "NVDA", decimals: 6, issuer: ISSUER, name: "Nvidia" },
+  { mint: "BLKKYfF41c6xRPrtX1rdYbxLE1xxEdZUnxQsB5hcZ8Nf", symbol: "BLK", decimals: 6, issuer: ISSUER, name: "BlackRock" },
+  { mint: "SPYBo66VJPFjh1pXMb9Le53kDYWTK1zzYVDeVRWtsbi", symbol: "SPY", decimals: 6, issuer: ISSUER, name: "SPDR S&P 500 ETF" },
 ];
-const byMint = new Map(LIST.map((c) => [c.mint, c]));
+let byMint = new Map(list.map((c) => [c.mint, c]));
+
+// Replace the list with the issuer's current stocks: Jupiter's verified tokens
+// tagged as that issuer's stocks, Token-2022 only (the one token program the
+// payment path handles), deepest liquidity first. A failed or empty fetch keeps
+// the list as it was. Returns how many are offered.
+export async function refreshCurrencies(): Promise<number> {
+  const r = await fetch("https://lite-api.jup.ag/tokens/v2/tag?query=verified");
+  const tokens = (await r.json()) as any[];
+  if (!r.ok || !Array.isArray(tokens)) throw new Error("token list unavailable (" + r.status + ")");
+  const next = tokens
+    .filter((t) => Array.isArray(t.tags) && t.tags.includes("backpack") && t.tags.includes("stocks") && t.tokenProgram === TOKEN_2022_PROGRAM.toBase58())
+    .sort((a, b) => (b.liquidity ?? 0) - (a.liquidity ?? 0))
+    .map((t): CurrencyInfo => ({ mint: t.id, symbol: t.symbol, decimals: t.decimals, issuer: ISSUER, name: String(t.name).replace(/ - Backpack Securities$/, "") }));
+  if (next.length) { list = next; byMint = new Map(next.map((c) => [c.mint, c])); }
+  return list.length;
+}
 
 export const SOL_INFO: CurrencyInfo = { mint: "SOL", symbol: "SOL", decimals: 9, issuer: "" };
 
@@ -33,7 +51,7 @@ export const isSol = (mint: string | null | undefined): boolean =>
   !mint || mint === "SOL" || mint === SOL_SENTINEL;
 
 export function currencyList(): CurrencyInfo[] {
-  return LIST;
+  return list;
 }
 
 // Display info for a stored currency mint. SOL for the native case; the known

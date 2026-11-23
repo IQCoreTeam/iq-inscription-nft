@@ -17,7 +17,7 @@ import { verifyItem, verifySingle } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
-import { isAllowedCurrency, isSol, currencyList, currencyInfo } from "./currencies.ts";
+import { isAllowedCurrency, isSol, currencyList, currencyInfo, refreshCurrencies } from "./currencies.ts";
 import { countryOf, stockAllowed } from "./geo.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
@@ -66,10 +66,11 @@ function rateLimited(ip: string): boolean {
 // the caller's own address is CF-Connecting-IP.
 const clientIp = (c: Context) => c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0].trim() || c.req.header("x-real-ip") || "local";
 
-// A stock-priced collection does not exist for a caller who may not use stock
-// currencies: every route resolves its collection through here, so lists,
-// pages, reservations and the mint co-sign all answer as if it was never made.
-const visible = (c: Context, col: CollectionRow) => isSol(col.currency_mint) || stockAllowed(c);
+// A stock-priced collection does not exist for a caller who may not use its
+// currency, whether by region or because the currency is no longer offered:
+// every route resolves its collection through here, so lists, pages,
+// reservations and the mint co-sign all answer as if it was never made.
+const visible = (c: Context, col: CollectionRow) => isAllowedCurrency(col.currency_mint ?? "SOL", stockAllowed(c));
 function colFor(c: Context, slug = c.req.param("slug")): CollectionRow | null {
   const col = getCollection(slug);
   return col && visible(c, col) ? col : null;
@@ -626,6 +627,9 @@ export function startJobs() {
     reap().catch((e) => console.error("[reaper]", e));
   }, config.reaperMs);
   startTensorPoller(); // no-op unless TENSOR_API_KEY is set and cluster is mainnet
+  const currencies = () => refreshCurrencies().then((n) => console.log(`[currencies] ${n} offered`), (e) => console.error("[currencies]", e));
+  void currencies();
+  setInterval(currencies, 3600_000);
 }
 
 if (import.meta.main) {

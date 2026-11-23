@@ -139,3 +139,13 @@ test("the market lists visible collections, the latest sale first", async () => 
   const [l] = (await get("/c/geo-stock/listings", "KR")).body.listings;
   expect(l).toMatchObject({ asset: assets["geo-stock"], price: 200, lastSale: 150, listedAt: now, rarity: null });
 });
+
+test("a collection priced in a currency that is no longer offered is hidden from everyone", async () => {
+  // xStocks NVDAx: once offered, now withdrawn. The collection was made while it was.
+  db.run("UPDATE collection SET currency_mint = 'Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh' WHERE slug = 'geo-stock'");
+  expect(await slugs("KR")).toEqual(["geo-sol"]);
+  expect((await get("/c/geo-stock", "KR")).status).toBe(404);
+  expect((await get("/market", "KR")).body.collections.map((r: any) => r.slug)).toEqual(["geo-sol"]);
+  expect((await get("/creator/currencies", "KR")).body.currencies.map((x: any) => x.symbol)).not.toContain("NVDAx");
+  db.run("UPDATE collection SET currency_mint = ?1 WHERE slug = 'geo-stock'", [NVDA]);
+});
