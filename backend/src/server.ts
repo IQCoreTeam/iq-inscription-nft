@@ -2,25 +2,26 @@
 // public auditor, and read-only collection views. Holds the registrar key and
 // the RPC pool; neither reaches a browser.
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { createHash, randomBytes } from "node:crypto";
 import { PublicKey, Connection } from "@solana/web3.js";
 import { config } from "./config.ts";
 import { rarityOf } from "./rarity.ts";
-import { db, nowSec } from "./db.ts";
+import { db, nowSec, type CollectionRow } from "./db.ts";
 import { getCollection, getItem, heldBy, listCollections, mintedIndices, publicView } from "./collections.ts";
 import { reserve, ReserveError } from "./allocator.ts";
 import { getReservation, markAwaitingSubmit, markCancelled, markLanded, markRejected, touchReservation } from "./reservations.ts";
-import { fetchRegistry, isMinted, sigBytes } from "./program.ts";
+import { fetchRegistry, isMinted, royaltyBps, sigBytes } from "./program.ts";
 import { verifyItem, verifySingle, verifyDeployment, deploymentMessage } from "./verifier.ts";
 import { coSignRegisterItem, coSignRegisterSingle } from "./cosigner.ts";
 import { buildMetadata } from "./metadata.ts";
 import { validateItemIndices, stageCollection, uploadItems, finishStage, buildDeploy, recordCollection, deployFee, buildCollectionJson, imgUrl, type DeploySpec, type StageItem, type ManifestItem, type Staged } from "./creator.ts";
-import { isAllowedCurrency, isSol, currencyList } from "./currencies.ts";
+import { isAllowedCurrency, isSol, currencyList, currencyInfo, refreshCurrencies } from "./currencies.ts";
+import { countryOf, stockAllowed } from "./geo.ts";
 import { reconcile, type ReconcileReport } from "./reconciler.ts";
 import { reap } from "./reaper.ts";
-import { startTensorPoller, recentSales, activeListings, recentListings, tensorDiag } from "./tensor.ts";
+import { startTensorPoller, recentSales, activeListings, recentListings, marketSummary, tensorDiag } from "./tensor.ts";
 import { buildListTx, buildBuyTx, buildDelistTx } from "./tensor-trade.ts";
 import { poolStats } from "./rpcpool.ts";
 
@@ -61,14 +62,28 @@ function rateLimited(ip: string): boolean {
   hits.set(ip, arr);
   return arr.length > config.reservePerIpPerMinute;
 }
-const clientIp = (c: any) => c.req.header("x-forwarded-for")?.split(",")[0].trim() || c.req.header("x-real-ip") || "local";
+// Behind Cloudflare the proxy's peer is an edge node shared by many users, so
+// the caller's own address is CF-Connecting-IP.
+const clientIp = (c: Context) => c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0].trim() || c.req.header("x-real-ip") || "local";
 
-app.get("/health", (c) => c.json({ ok: true, cluster: config.cluster, programId: config.programId.toBase58() }));
+// A stock-priced collection does not exist for a caller who may not use its
+// currency, whether by region or because the currency is no longer offered:
+// every route resolves its collection through here, so lists, pages,
+// reservations and the mint co-sign all answer as if it was never made.
+const visible = (c: Context, col: CollectionRow) => isAllowedCurrency(col.currency_mint ?? "SOL", stockAllowed(c));
+function colFor(c: Context, slug = c.req.param("slug")): CollectionRow | null {
+  const col = getCollection(slug);
+  return col && visible(c, col) ? col : null;
+}
 
-app.get("/c", (c) => c.json({ collections: listCollections().map(publicView) }));
+// country + stocks echo what this caller's request resolved to (geo.ts), so the
+// fence can be checked from any location with one request.
+app.get("/health", (c) => c.json({ ok: true, cluster: config.cluster, programId: config.programId.toBase58(), country: countryOf(c), stocks: stockAllowed(c) }));
+
+app.get("/c", (c) => c.json({ collections: listCollections().filter((col) => visible(c, col)).map(publicView) }));
 
 app.get("/c/:slug", (c) => {
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   if (!col) return c.json({ error: "not found" }, 404);
   return c.json({ ...publicView(col), mintedIndices: mintedIndices(col.slug) });
 });
@@ -76,7 +91,7 @@ app.get("/c/:slug", (c) => {
 // Items are public before mint (the images sit on Arweave), so the page can
 // render the grid. Paged; names and Arweave ids only.
 app.get("/c/:slug/items", (c) => {
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   if (!col) return c.json({ error: "not found" }, 404);
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
   const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 60) || 60), 500);
@@ -113,7 +128,7 @@ app.get("/c/:slug/items", (c) => {
 
 app.post("/c/:slug/reserve", async (c) => {
   if (rateLimited(clientIp(c))) return c.json({ error: "rate limited" }, 429);
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   if (!col) return c.json({ error: "not found" }, 404);
   const body = await c.req.json().catch(() => ({}));
   if (!isPubkey(body.wallet) || !isPubkey(body.burner)) return c.json({ error: "wallet and burner must be base58 pubkeys" }, 400);
@@ -145,7 +160,7 @@ app.post("/c/:slug/reserve/cancel", async (c) => {
 
 // The canonical metadata for (item, C): the exact bytes the minter must inscribe as M.
 app.get("/c/:slug/json/:index", (c) => {
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   const index = Number(c.req.param("index"));
   const sig = c.req.query("c");
   if (!col) return c.json({ error: "not found" }, 404);
@@ -157,7 +172,7 @@ app.get("/c/:slug/json/:index", (c) => {
 
 app.post("/c/:slug/mint", async (c) => {
   const t0 = Date.now();
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   if (!col) return c.json({ error: "not found" }, 404);
   const body = await c.req.json().catch(() => ({}));
   const { reservationId, inscriptionSig, metaSig, asset } = body ?? {};
@@ -205,7 +220,7 @@ app.post("/c/:slug/mint", async (c) => {
 // mirrored right away (grid, My NFTs, the wallet's open-reservation count)
 // instead of at the next reconcile. 202 = not visible yet, call again.
 app.post("/c/:slug/mint/landed", async (c) => {
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   if (!col) return c.json({ error: "not found" }, 404);
   const body = await c.req.json().catch(() => ({}));
   const r = typeof body?.reservationId === "string" ? getReservation(body.reservationId) : null;
@@ -225,7 +240,7 @@ app.post("/c/:slug/mint/landed", async (c) => {
 app.get("/owner/:wallet", (c) => {
   const wallet = c.req.param("wallet");
   if (!isPubkey(wallet)) return c.json({ error: "wallet must be a base58 pubkey" }, 400);
-  const items = heldBy(wallet).map((r) => {
+  const items = heldBy(wallet).filter((r) => colFor(c, r.slug)).map((r) => {
     const rr = rarityOf(r.slug)?.get(r.item_index);
     return { slug: r.slug, collectionName: r.col_name, index: r.item_index, name: r.name, asset: r.asset, inscriptionSig: r.inscription_sig, registeredAt: r.registered_at, rarity: rr ? { rank: rr.rank, tier: rr.tier } : null };
   });
@@ -259,7 +274,7 @@ const staging = new Map<string, Staging>();
 const nftConn = () => new Connection(config.rpcUrls[0], "confirmed");
 
 // Validate the collection spec (shared by /creator/stage and /creator/stage/begin).
-function parseSpec(b: any): { spec: DeploySpec } | { error: string; code: 400 | 409 } {
+function parseSpec(b: any, stocks: boolean): { spec: DeploySpec } | { error: string; code: 400 | 409 } {
   const slug = typeof b.slug === "string" ? b.slug : "";
   if (!/^[a-z0-9-]{3,32}$/.test(slug)) return { error: "slug must be 3..32 of [a-z0-9-]", code: 400 };
   if (getCollection(slug)) return { error: "slug already exists", code: 409 };
@@ -267,7 +282,7 @@ function parseSpec(b: any): { spec: DeploySpec } | { error: string; code: 400 | 
   if (typeof b.name !== "string" || !b.name || Buffer.byteLength(b.name) > 80) return { error: "name must be 1..80 bytes", code: 400 };
   if (typeof b.symbol !== "string" || !b.symbol) return { error: "symbol required", code: 400 };
   const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
-  if (!isAllowedCurrency(currency)) return { error: "currency must be SOL or an allowed mint", code: 400 };
+  if (!isAllowedCurrency(currency, stocks)) return { error: "currency must be SOL or an allowed mint", code: 400 };
   const price = Number(b.price) || 0;
   // The deposit is always SOL. For a token-priced collection it cannot be netted
   // against a token price (different units) and the program requires
@@ -298,11 +313,13 @@ const lightItems = (items: StageItem[]) => items.map((it) => ({ ...it, bytes: Bu
 // request. Large collections use begin/batch/finish below so no single request
 // carries the whole collection or runs the whole Arweave upload.
 // The non-SOL currencies a creator may price a collection in (SOL is implicit).
-app.get("/creator/currencies", (c) => c.json({ currencies: currencyList() }));
+// Empty where stock currencies are not offered: the client draws its currency
+// controls from this list alone, so an empty list is the SOL-only site.
+app.get("/creator/currencies", (c) => c.json({ currencies: stockAllowed(c) ? currencyList() : [] }));
 
 app.post("/creator/stage", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
-  const sp = parseSpec(b);
+  const sp = parseSpec(b, stockAllowed(c));
   if ("error" in sp) return c.json({ error: sp.error }, sp.code);
   const items = toStageItems(b.items, sp.spec.name, 0);
   try { validateItemIndices(items); }
@@ -326,7 +343,7 @@ app.post("/creator/stage", async (c) => {
 // manifest + collection.json). Keeps every request small and fast.
 app.post("/creator/stage/begin", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
-  const sp = parseSpec(b);
+  const sp = parseSpec(b, stockAllowed(c));
   if ("error" in sp) return c.json({ error: sp.error }, sp.code);
   const id = randomBytes(16).toString("hex");
   staging.set(id, { spec: sp.spec, items: [], acc: [], creator: b.creator });
@@ -368,6 +385,9 @@ app.post("/creator/deploy", async (c) => {
   const b = await c.req.json().catch(() => ({} as any));
   const s = typeof b.stagingId === "string" ? staging.get(b.stagingId) : undefined;
   if (!s) return c.json({ error: "unknown or expired stagingId" }, 404);
+  // Staging may have begun elsewhere; the transaction is only built for a caller
+  // who may use the currency now.
+  if (!isAllowedCurrency(s.spec.currency, stockAllowed(c))) return c.json({ error: "currency not available", currency: s.spec.currency }, 403);
   if (!s.staged) return c.json({ error: "stage not finished; call /creator/stage/finish first" }, 409);
   if (!isPubkey(b.creator) || b.creator !== s.creator) return c.json({ error: "creator mismatch" }, 400);
   if (!isPubkey(b.collection)) return c.json({ error: "collection must be a base58 pubkey" }, 400);
@@ -447,7 +467,7 @@ app.post("/creator/finalize", async (c) => {
 // The public auditor: re-read the inscriptions and expose every value so a
 // third party can redo the work.
 app.get("/c/:slug/verify/:index", async (c) => {
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   const index = Number(c.req.param("index"));
   if (!col) return c.json({ error: "not found" }, 404);
   const item = getItem(col.slug, index);
@@ -489,7 +509,7 @@ app.get("/c/:slug/verify/:index", async (c) => {
 });
 
 app.get("/c/:slug/item/:index", (c) => {
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   if (!col) return c.json({ error: "not found" }, 404);
   const index = Number(c.req.param("index"));
   const item = db.query<{ name: string }, [string, number]>("SELECT name FROM item WHERE slug = ? AND item_index = ?").get(col.slug, index);
@@ -508,19 +528,19 @@ app.get("/asset/:address", (c) => {
       "SELECT slug, item_index, owner, inscription_sig, meta_sig FROM slot WHERE asset = ?"
     )
     .get(c.req.param("address"));
-  if (!s) return c.json({ error: "not a minted item in this registry" }, 404);
-  const col = getCollection(s.slug);
+  const col = s && colFor(c, s.slug);
+  if (!s || !col) return c.json({ error: "not a minted item in this registry" }, 404);
   const item = db.query<{ name: string }, [string, number]>("SELECT name FROM item WHERE slug = ? AND item_index = ?").get(s.slug, s.item_index);
   const rr = rarityOf(s.slug)?.get(s.item_index);
   return c.json({
-    asset: c.req.param("address"), slug: s.slug, collection: col?.core_collection ?? null, collectionName: col?.name ?? null,
+    asset: c.req.param("address"), slug: s.slug, collection: col.core_collection, collectionName: col.name,
     index: s.item_index, name: item?.name ?? null, owner: s.owner, inscriptionSig: s.inscription_sig, metaSig: s.meta_sig,
-    rarity: rr ? { rank: rr.rank, tier: rr.tier, score: rr.score, total: col?.max_supply ?? 0 } : null,
+    rarity: rr ? { rank: rr.rank, tier: rr.tier, score: rr.score, total: col.max_supply } : null,
   });
 });
 
 app.get("/c/:slug/recent", (c) => {
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   if (!col) return c.json({ error: "not found" }, 404);
   const limit = Math.min(Number(c.req.query("limit") ?? 20) || 20, 100);
   // inscriptionSig lets the feed render the item's on-chain image (gateway
@@ -542,26 +562,49 @@ app.get("/c/:slug/recent", (c) => {
 // Active secondary-market listings (Tensor, mainnet only). Empty on devnet or
 // until the poller indexes the collection. Floor is the cheapest active ask.
 app.get("/c/:slug/listings", (c) => {
-  const col = getCollection(c.req.param("slug"));
+  const col = colFor(c);
   if (!col) return c.json({ error: "not found" }, 404);
   const limit = Math.min(Number(c.req.query("limit") ?? 200) || 200, 500);
-  const listings = activeListings(col.slug, limit);
+  const rarity = rarityOf(col.slug);
+  const listings = activeListings(col.slug, limit).map((l) => ({ ...l, rarity: (l.index != null && rarity?.get(l.index)?.tier) || null }));
   return c.json({ listings, floor: listings.length ? listings[0].price : 0, count: listings.length });
+});
+
+// The market's collection list: every collection this caller may see, with its
+// floor, listed count and 24h change, the most recently sold first.
+app.get("/market", (c) => {
+  const rows = listCollections().filter((col) => col.max_supply > 0 && visible(c, col)).map((col) => ({ ...publicView(col), ...marketSummary(col.slug) }));
+  return c.json({ collections: rows.sort((a, b) => b.lastSaleAt - a.lastSaleAt) });
 });
 
 // Secondary-market trade transactions (Tensor), built server-side (the API key
 // stays here) and returned unsigned for the client to sign and send. Our
 // treasury is the broker, so our share of Tensor's taker fee comes back. The
-// trade settles on Tensor's program, not ours. A non-SOL currency is gated by
-// STOCK_ENABLED via isAllowedCurrency.
+// trade settles on Tensor's program, not ours.
+//
+// Only items minted through this registry trade here, and always in their
+// collection's own currency: a collection priced in a stock token lists and
+// sells in that token and nothing else, a SOL collection in SOL. The client does
+// not choose; a `currency` it sends is only checked against the collection's.
+// A stock collection the caller may not see (geo.ts) has no market either.
+const slotSlug = db.query<{ slug: string }, [string]>("SELECT slug FROM slot WHERE asset = ?");
+function tradeCurrency(c: Context, asset: string, asked: unknown): { currency: string; collection: string } | { error: string; code: 400 | 404 } {
+  const slot = slotSlug.get(asset);
+  const col = slot && colFor(c, slot.slug);
+  if (!col) return { error: "not a minted item in this registry", code: 404 };
+  const currency = col.currency_mint ?? "SOL";
+  if (typeof asked === "string" && asked && (isSol(asked) ? "SOL" : asked) !== currency) return { error: `${col.name} trades in ${currencyInfo(col.currency_mint).symbol} only`, code: 400 };
+  return { currency, collection: col.core_collection };
+}
+
 app.post("/market/list", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   if (!isPubkey(b.mint) || !isPubkey(b.owner)) return c.json({ error: "mint and owner must be base58 pubkeys" }, 400);
   const price = Number(b.price);
   if (!Number.isFinite(price) || price <= 0) return c.json({ error: "price must be a positive number" }, 400);
-  const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
-  if (!isAllowedCurrency(currency)) return c.json({ error: "currency not available", currency }, 403);
-  try { return c.json(await buildListTx({ mint: b.mint, owner: b.owner, price, currency })); }
+  const t = tradeCurrency(c, b.mint, b.currency);
+  if ("error" in t) return c.json({ error: t.error }, t.code);
+  try { return c.json(await buildListTx({ mint: b.mint, owner: b.owner, price, currency: t.currency })); }
   catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
 });
 
@@ -570,12 +613,16 @@ app.post("/market/buy", async (c) => {
   if (!isPubkey(b.mint) || !isPubkey(b.buyer) || !isPubkey(b.owner)) return c.json({ error: "mint, buyer, owner must be base58 pubkeys" }, 400);
   const maxPrice = Number(b.maxPrice);
   if (!Number.isFinite(maxPrice) || maxPrice <= 0) return c.json({ error: "maxPrice must be a positive number" }, 400);
-  const currency = typeof b.currency === "string" && b.currency ? b.currency : "SOL";
-  if (!isAllowedCurrency(currency)) return c.json({ error: "currency not available", currency }, 403);
-  try { return c.json(await buildBuyTx({ mint: b.mint, buyer: b.buyer, owner: b.owner, maxPrice, currency })); }
+  const t = tradeCurrency(c, b.mint, b.currency);
+  if ("error" in t) return c.json({ error: t.error }, t.code);
+  // royaltyBps lets the client split Tensor's total into price, creator royalty
+  // and marketplace fee.
+  try { return c.json({ ...(await buildBuyTx({ mint: b.mint, buyer: b.buyer, owner: b.owner, maxPrice, currency: t.currency })), royaltyBps: await royaltyBps(t.collection).catch(() => null) }); }
   catch (e) { return c.json({ error: String((e as any)?.message ?? e) }, 400); }
 });
 
+// Cancelling is always open, from anywhere: a seller must be able to take an
+// item back.
 app.post("/market/delist", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   if (!isPubkey(b.mint) || !isPubkey(b.owner)) return c.json({ error: "mint and owner must be base58 pubkeys" }, 400);
@@ -597,6 +644,9 @@ export function startJobs() {
     reap().catch((e) => console.error("[reaper]", e));
   }, config.reaperMs);
   startTensorPoller(); // no-op unless TENSOR_API_KEY is set and cluster is mainnet
+  const currencies = () => refreshCurrencies().then((n) => console.log(`[currencies] ${n} offered`), (e) => console.error("[currencies]", e));
+  void currencies();
+  setInterval(currencies, 3600_000);
 }
 
 if (import.meta.main) {

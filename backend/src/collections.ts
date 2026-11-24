@@ -5,7 +5,7 @@ import { config } from "./config.ts";
 import { db, nowSec, type CollectionRow, type ItemRow } from "./db.ts";
 import { derivePermutation } from "./shuffle.ts";
 import { currencyInfo } from "./currencies.ts";
-import type { OnChainSlot } from "./program.ts";
+import { PLATFORM_TREASURY, type OnChainSlot } from "./program.ts";
 
 const bySlug = db.query<CollectionRow, [string]>("SELECT * FROM collection WHERE slug = ?");
 // Bump order (pump.fun style) by latest activity: a mint or a launch, whichever
@@ -99,6 +99,9 @@ export function publicView(c: CollectionRow) {
     priceLamports: c.price_lamports, // price in the currency's smallest unit (lamports for SOL, raw token units otherwise)
     depositLamports: c.deposit_lamports, // deposit is always SOL
     treasury: c.treasury,
+    // The platform fee's payee. A token-priced mint pays it through this owner's
+    // token account, which the minter opens if it does not exist yet.
+    platformTreasury: PLATFORM_TREASURY.toBase58(),
     // The mint the price is paid in. SOL unless the creator chose a token.
     currency: currencyInfo(c.currency_mint), // { mint, symbol, decimals, issuer }
     sequential: c.sequential === 1,

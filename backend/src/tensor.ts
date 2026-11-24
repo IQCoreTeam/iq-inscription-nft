@@ -34,7 +34,7 @@ async function resolveCollId(itemMint: string): Promise<string | null> {
   return id != null ? String(id) : null;
 }
 
-type HistTx = { txId: string; mint: string; type: string; price: number; buyer: string | null; seller: string | null; source: string | null; blockTime: number; listingEnd: number };
+type HistTx = { txId: string; mint: string; type: string; price: number; buyer: string | null; seller: string | null; source: string | null; blockTime: number };
 
 // Recent txs across every marketplace, newest first. Fetched unfiltered (the
 // txType enum names beyond LIST/SALE_* are not all documented, and one bad
@@ -51,7 +51,6 @@ async function fetchHistory(collId: string, limit = 50): Promise<HistTx[] | null
     .map((t) => {
       const tx = t.tx ?? {};
       const at = secs(tx.txAt);
-      const end = secs(tx.listingEnd);
       return {
         txId: String(tx.txId ?? tx.txKey ?? ""),
         mint: String(tx.mintOnchainId ?? t.mint?.onchainId ?? ""),
@@ -61,7 +60,6 @@ async function fetchHistory(collId: string, limit = 50): Promise<HistTx[] | null
         seller: tx.sellerId ?? null,
         source: tx.source ?? null,
         blockTime: Number.isFinite(at) ? at : 0,
-        listingEnd: Number.isFinite(end) ? end : 0,
       } as HistTx;
     })
     .filter((x) => x.txId && x.mint)
@@ -103,22 +101,42 @@ async function syncCollection(c: CollectionRow): Promise<void> {
     }
   }
 
-  // Active listings = each mint's most recent state, kept when it is a live LIST
-  // (or a price adjustment) that has not expired. Snapshot-replaced so sold or
-  // delisted items drop out.
-  const seen = new Set<string>();
-  const active: { mint: string; price: number; seller: string | null; source: string | null; listedAt: number }[] = [];
-  for (const h of hist) {
-    if (seen.has(h.mint)) continue;
-    seen.add(h.mint);
-    if ((h.type === "LIST" || h.type === "ADJUST_PRICE") && h.price > 0 && (h.listingEnd === 0 || h.listingEnd > now)) {
-      active.push({ mint: h.mint, price: h.price, seller: h.seller, source: h.source, listedAt: h.blockTime });
-    }
-  }
+  // Active listings come from Tensor's per-item records, not from tx_history:
+  // the history feed leaves out a listing priced in a token (seen on mainnet: an
+  // NVDAx listing that the item record showed and the feed never did). A
+  // collection trades in one currency here, so a listing in any other is not
+  // ours to show. The record carries no list time, so a listing keeps the time
+  // it was first seen with (or the feed's, when the feed has it).
+  const listed = await fetchListed(slots.map((s) => s.asset));
+  if (listed === null) return; // transient fetch error; keep the existing snapshot
+  const before = new Map(listingTimes.all(c.slug).map((r) => [r.asset + ":" + r.price, r.listed_at]));
+  const fromFeed = new Map(hist.filter((h) => h.type === "LIST" || h.type === "ADJUST_PRICE").reverse().map((h) => [h.mint + ":" + h.price, h.blockTime]));
   db.transaction(() => {
     delListings.run(c.slug);
-    for (const l of active) insListing.run(c.slug, idxOf.get(l.mint) ?? null, l.mint, l.price, l.seller, l.source, l.listedAt, now);
+    for (const l of listed) {
+      if (l.unit !== (c.currency_mint ?? null)) continue;
+      const key = l.mint + ":" + l.price;
+      insListing.run(c.slug, idxOf.get(l.mint) ?? null, l.mint, l.price, l.seller, l.source, before.get(key) ?? fromFeed.get(key) ?? now, now);
+    }
   })();
+}
+
+const listingTimes = db.query<{ asset: string; price: number; listed_at: number }, [string]>("SELECT asset, price, listed_at FROM listing WHERE slug = ?");
+
+// The active listing of each of these items, if it has one. `unit` is the mint
+// the price is in, null for SOL. null overall when a request failed.
+const MINT_BATCH = 100;
+async function fetchListed(assets: string[]): Promise<{ mint: string; price: number; seller: string | null; source: string | null; unit: string | null }[] | null> {
+  const out = [];
+  for (let i = 0; i < assets.length; i += MINT_BATCH) {
+    const j = await tj("/mint?" + assets.slice(i, i + MINT_BATCH).map((a) => "mints=" + a).join("&"));
+    if (!Array.isArray(j)) return null;
+    for (const m of j) {
+      const price = Math.round(Number(m?.listing?.price ?? 0));
+      if (price > 0) out.push({ mint: String(m.onchainId), price, seller: m.listing.seller ?? null, source: m.listing.source ?? null, unit: m.listing.priceUnit ?? null });
+    }
+  }
+  return out;
 }
 
 let lastPoll = 0;
@@ -173,19 +191,40 @@ export function startTensorPoller(): void {
   setInterval(() => void syncAll(), config.tensorPollMs);
 }
 
-export type ActiveListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscriptionSig: string | null };
+// lastSale = what this item last sold for (0 if it never did); listedAt = the
+// LIST tx time. The market sorts on both.
+export type ActiveListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscriptionSig: string | null; listedAt: number; lastSale: number };
 
 const listingQ = db.query<
-  { item_index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscription_sig: string | null },
+  { item_index: number | null; asset: string; price: number; seller: string | null; source: string | null; inscription_sig: string | null; listed_at: number; last_sale: number | null },
   [string, number]
 >(
-  `SELECT listing.item_index, listing.asset, listing.price, listing.seller, listing.source, slot.inscription_sig
+  `SELECT listing.item_index, listing.asset, listing.price, listing.seller, listing.source, slot.inscription_sig, listing.listed_at,
+          (SELECT price FROM sale WHERE sale.asset = listing.asset ORDER BY block_time DESC LIMIT 1) AS last_sale
    FROM listing LEFT JOIN slot ON slot.slug = listing.slug AND slot.asset = listing.asset
    WHERE listing.slug = ? ORDER BY listing.price ASC LIMIT ?`,
 );
 
 export function activeListings(slug: string, limit: number): ActiveListing[] {
-  return listingQ.all(slug, limit).map((r) => ({ index: r.item_index, asset: r.asset, price: r.price, seller: r.seller, source: r.source, inscriptionSig: r.inscription_sig }));
+  return listingQ.all(slug, limit).map((r) => ({ index: r.item_index, asset: r.asset, price: r.price, seller: r.seller, source: r.source, inscriptionSig: r.inscription_sig, listedAt: r.listed_at, lastSale: r.last_sale ?? 0 }));
+}
+
+// A collection's line in the market list. change24h compares the newest sale
+// with the newest sale that is at least a day old, in percent; 0 until both
+// exist. lastSaleAt orders the list: a sale bumps its collection to the top.
+const summaryQ = db.query<{ floor: number | null; listed: number; last_sale_at: number | null }, [string]>(
+  `SELECT (SELECT MIN(price) FROM listing WHERE slug = ?1) AS floor,
+          (SELECT COUNT(*) FROM listing WHERE slug = ?1) AS listed,
+          (SELECT MAX(block_time) FROM sale WHERE slug = ?1) AS last_sale_at`,
+);
+const salePriceAtQ = db.query<{ price: number }, [string, number]>("SELECT price FROM sale WHERE slug = ? AND block_time <= ? ORDER BY block_time DESC LIMIT 1");
+export function marketSummary(slug: string) {
+  const s = summaryQ.get(slug)!;
+  const now = salePriceAtQ.get(slug, nowSec()), dayAgo = salePriceAtQ.get(slug, nowSec() - 86400);
+  return {
+    floor: s.floor ?? 0, listed: s.listed, lastSaleAt: s.last_sale_at ?? 0,
+    change24h: now && dayAgo && dayAgo.price ? ((now.price - dayAgo.price) / dayAgo.price) * 100 : 0,
+  };
 }
 
 export type RecentListing = { index: number | null; asset: string; price: number; seller: string | null; source: string | null; listedAt: number; inscriptionSig: string | null };

@@ -112,4 +112,8 @@ export const config = {
   // refused until this is set, which gates public stock collections behind the
   // lawyer review + geo-fence. SOL is never gated. Flip to "true" to enable.
   stockEnabled: env("STOCK_ENABLED", "false") === "true",
+  // Countries (ISO alpha-2, comma list) that never see stock currencies even
+  // when the switch above is on; see geo.ts. The default is the United States
+  // plus the comprehensively sanctioned countries, pending the lawyer's list.
+  stockBlockedCountries: new Set(env("STOCK_BLOCKED_COUNTRIES", "US,CU,IR,KP,SY").toUpperCase().split(",").map((s) => s.trim()).filter(Boolean)),
 };
