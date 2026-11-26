@@ -288,6 +288,11 @@ pub mod iq_inscription_nft {
         Ok(())
     }
 
+    pub fn transfer_admin(ctx: Context<TransferAdmin>) -> Result<()> {
+        ctx.accounts.current.registry.admin = ctx.accounts.new_admin.key();
+        Ok(())
+    }
+
     pub fn set_frozen(ctx: Context<AdminOnly>, frozen: bool) -> Result<()> {
         ctx.accounts.registry.frozen = frozen;
         Ok(())
@@ -826,6 +831,12 @@ pub struct AdminOnly<'info> {
         has_one = admin @ ErrorCode::UnauthorizedAdmin
     )]
     pub registry: Account<'info, Registry>,
+}
+
+#[derive(Accounts)]
+pub struct TransferAdmin<'info> {
+    pub current: AdminOnly<'info>,
+    pub new_admin: Signer<'info>,
 }
 
 #[derive(Accounts)]

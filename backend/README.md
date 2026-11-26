@@ -121,6 +121,16 @@ stateDiagram-v2
 
 Only `reserved` and a dead `awaiting_submit` ever return an index to the pool. The deposit is never refunded by the backend; it went to the creator at reservation time.
 
+## Collection admin and treasury cutover
+
+The `transfer_admin` instruction updates the admin of one registry. The current and incoming admins both sign. The registrar, mint treasury, and resale royalty recipients are separate authorities and destinations. A cutover can change any of them as needed.
+
+1. **Record the current settings.** Confirm the collection and registry addresses and read the current admin, registrar, treasury, mint currency, price, deposit, and royalty configuration on-chain. Verify the incoming admin and any new payout addresses with their owner. Simulate the planned instructions on a test deployment before starting the cutover.
+2. **Pause new payments for the affected collection before changing its treasury.** Stop new checkout sessions from starting and prevent clients from sending deposits to the old treasury. Let outstanding reservations and already-issued mint transactions finish or expire. For a nonzero deposit, reconcile confirmed payments to the old treasury, including payments made before `/reserve` was called. Resolve any deposits for purchases that cannot complete before reopening checkout. The backend checks new deposits against `collection.treasury` and does not refund them automatically. Freezing the on-chain registry blocks minting and still leaves the hosted deposit and reservation flow to be paused separately.
+3. **Confirm the on-chain switch.** In one transaction, place any `set_price`, `set_royalties`, or `rotate_registrar` instructions before `transfer_admin` so the outgoing admin can authorize them. Keep the existing price and deposit when only redirecting mint proceeds. Preserve the royalty rate and other recipients unless the owner has approved changes. Verify the finalized registry and royalty plugin before applying the hosted update.
+4. **Sync hosted checkout.** Update the affected collection’s stored `treasury` to the finalized on-chain value. The deposit verifier and mint co-signer both read this field. Ensure all running checkout instances see the new value and that the configured co-signer matches the on-chain registrar. Verify any displayed creator or admin address against its intended meaning. For a token-priced collection, verify the payout token account for the new treasury before accepting payments.
+5. **Verify before reopening.** Exercise the affected collection’s checkout in staging and validate a post-cutover mint. Check the recipient, amount, and currency for the mint proceeds and confirm the collection’s royalty recipients and rate on-chain. If the on-chain transaction fails, retain the original hosted values. If the transaction lands and checkout fails, keep checkout paused and bring the hosted values into agreement with finalized chain state before retrying.
+
 ## What the creator deploy does (CLI now, the site wizard later)
 
 ```mermaid

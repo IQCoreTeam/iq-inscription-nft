@@ -42,6 +42,13 @@ const PROGRAM_ID: PublicKey = program.programId;
 const MPL_CORE = new PublicKey("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 const PLATFORM_TREASURY = new PublicKey("EWNSTD8tikwqHMcRNuuNbZrnYJUiJdKq9UXLXSEU4wZ1");
 const PLATFORM_FEE_BPS = 500;
+const nativeCurrencyAccounts = {
+  currencyMint: null,
+  minterToken: null,
+  treasuryToken: null,
+  platformToken: null,
+  tokenProgram: null,
+};
 const MAX_SUPPLY = 20;
 const URI = "https://gateway.iqlabs.dev/nft/" + "M".repeat(88); // 119 bytes, the real shape
 const URI_MAX = "u".repeat(160);
@@ -140,6 +147,7 @@ function registerItemIx(o: ItemOpts): Promise<TransactionInstruction> {
       platformTreasury: o.platformTreasury ?? PLATFORM_TREASURY,
       asset: o.asset,
       mplCoreProgram: MPL_CORE,
+      ...nativeCurrencyAccounts,
       systemProgram: SystemProgram.programId,
     })
     .instruction();
@@ -203,7 +211,8 @@ function initIx(o: {
       o.admin ?? adminKp.publicKey,
       new BN(o.price ?? 0),
       new BN(o.deposit ?? 0),
-      treasuryPk
+      treasuryPk,
+      PublicKey.default
     )
     .accountsStrict({
       payer: adminKp.publicKey,
@@ -409,6 +418,53 @@ async function main() {
     await expectFail(program.methods.setPrice(new BN(1), new BN(0), attackerKp.publicKey).accountsStrict(acc).signers([attackerKp]).rpc(), "UnauthorizedAdmin", "attacker set_price");
   });
 
+  await test("transfer_admin requires both signatures and rotates only the selected registry", async () => {
+    const oldAdmin = Keypair.generate();
+    const newAdmin = Keypair.generate();
+    const collection = await newCollection("Admin Rotation");
+    const registry = registryOf(collection);
+    await initIx({ collection, maxSupply: MAX_SUPPLY, admin: oldAdmin.publicKey }).rpc();
+
+    const registryAccount = (program.account as any).registry;
+    const before = await registryAccount.fetch(registry);
+    const otherBefore = await registryAccount.fetch(registryPda);
+    const transfer = (admin: PublicKey) => program.methods.transferAdmin().accountsStrict({
+      current: { admin, registry },
+      newAdmin: newAdmin.publicKey,
+    });
+
+    // The provider is a separate fee payer so it cannot supply either signature.
+    for (const [missing, signer] of [[oldAdmin, newAdmin], [newAdmin, oldAdmin]]) {
+      const ix = await transfer(oldAdmin.publicKey).instruction();
+      const account = ix.keys.find((key) => key.pubkey.equals(missing.publicKey));
+      assert.ok(account?.isSigner);
+      account.isSigner = false;
+      await expectFail(
+        provider.sendAndConfirm(new Transaction().add(ix), [signer]),
+        "AccountNotSigner",
+        `missing ${missing === oldAdmin ? "current" : "incoming"} admin signature`
+      );
+    }
+    await expectFail(
+      transfer(attackerKp.publicKey).signers([attackerKp, newAdmin]).rpc(),
+      "UnauthorizedAdmin",
+      "wrong admin with both signatures"
+    );
+    assert.deepEqual(await registryAccount.fetch(registry), before);
+
+    await transfer(oldAdmin.publicKey).signers([oldAdmin, newAdmin]).rpc();
+    assert.deepEqual(await registryAccount.fetch(registry), { ...before, admin: newAdmin.publicKey });
+    assert.deepEqual(await registryAccount.fetch(registryPda), otherBefore);
+
+    await expectFail(
+      program.methods.setFrozen(true).accountsStrict({ admin: oldAdmin.publicKey, registry }).signers([oldAdmin]).rpc(),
+      "UnauthorizedAdmin",
+      "previous admin after transfer"
+    );
+    await program.methods.setFrozen(true).accountsStrict({ admin: newAdmin.publicKey, registry }).signers([newAdmin]).rpc();
+    assert.equal((await registryAccount.fetch(registry)).frozen, true);
+  });
+
   await test("no external key can create an asset into the collection", async () => {
     const umiAttacker = createUmi(connection.rpcEndpoint, { commitment: "confirmed" }).use(keypairIdentity(fromWeb3JsKeypair(attackerKp)));
     await expectFail(
@@ -542,6 +598,7 @@ async function main() {
         platformTreasury: PLATFORM_TREASURY,
         asset: assetKp.publicKey,
         mplCoreProgram: MPL_CORE,
+        ...nativeCurrencyAccounts,
         systemProgram: SystemProgram.programId,
       })
       .instruction();
@@ -579,6 +636,7 @@ async function main() {
         platformTreasury: PLATFORM_TREASURY,
         asset: wrongAsset.publicKey,
         mplCoreProgram: MPL_CORE,
+        ...nativeCurrencyAccounts,
         systemProgram: SystemProgram.programId,
       })
       .instruction();

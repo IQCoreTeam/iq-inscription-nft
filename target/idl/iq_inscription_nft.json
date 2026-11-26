@@ -577,6 +577,64 @@
       ]
     },
     {
+      "name": "transfer_admin",
+      "discriminator": [
+        42,
+        242,
+        66,
+        106,
+        228,
+        10,
+        111,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "current",
+          "accounts": [
+            {
+              "name": "admin",
+              "signer": true,
+              "relations": [
+                "registry"
+              ]
+            },
+            {
+              "name": "registry",
+              "writable": true,
+              "pda": {
+                "seeds": [
+                  {
+                    "kind": "const",
+                    "value": [
+                      114,
+                      101,
+                      103,
+                      105,
+                      115,
+                      116,
+                      114,
+                      121
+                    ]
+                  },
+                  {
+                    "kind": "account",
+                    "path": "registry.collection",
+                    "account": "Registry"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "new_admin",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "set_frozen",
       "discriminator": [
         62,
