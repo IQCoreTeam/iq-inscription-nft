@@ -29,6 +29,8 @@ let mintedBitmap = new Uint8Array(2);
 let release!: () => void;
 let gate: Promise<void> = Promise.resolve();
 mock.module("../backend/src/program.ts", () => ({
+  // collections.ts reads it for the public view; the allocator never does.
+  PLATFORM_TREASURY: { toBase58: () => "EWNSTD8tikwqHMcRNuuNbZrnYJUiJdKq9UXLXSEU4wZ1" },
   fetchRegistry: async () => {
     arrived++;
     await gate;
